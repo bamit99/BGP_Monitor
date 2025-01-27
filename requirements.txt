@@ -1,0 +1,11 @@
+websockets>=10.0
+requests>=2.25.1
+pandas>=1.2.0
+matplotlib>=3.8.2
+networkx>=3.2.1
+seaborn>=0.13.0
+plotly>=5.18.0
+python-dateutil>=2.8.2
+aiohttp>=3.8.0
+asyncio>=3.4.3
+pathlib>=1.0.1
