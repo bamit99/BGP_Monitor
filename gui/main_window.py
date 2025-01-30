@@ -15,6 +15,7 @@ import re
 import os
 import subprocess
 from pathlib import Path
+from utils.config_manager import ConfigManager
 
 class BGPMonitorGUI:
     def __init__(self, root):
@@ -22,6 +23,10 @@ class BGPMonitorGUI:
         self.root = root
         self.root.title("BGP Monitor")
         self.root.geometry("800x600")
+        
+        # Initialize configuration manager
+        self.config_manager = ConfigManager()
+        self.settings = self.config_manager.load_settings()
         
         # Create main frame
         self.main_frame = ttk.Frame(root)
@@ -52,8 +57,8 @@ class BGPMonitorGUI:
         
         # Set default region if available
         if self.get_all_regions():
-            self.region_var.set(self.get_all_regions()[0])
-            self.update_collectors()
+            self.region_var.set(self.settings.get("region", self.get_all_regions()[0]))
+            self.update_collectors()  # Will call with None event
         
         # Create status bar
         self.status_var = tk.StringVar(value="Ready")
@@ -64,100 +69,96 @@ class BGPMonitorGUI:
         about_frame = ttk.Frame(root)
         about_frame.pack(side="bottom", fill="x", padx=5, pady=(0, 5))
         about_button = ttk.Button(about_frame, text="About", command=self.show_about, width=10)
-        about_button.pack(side="right", padx=5)
+        about_button.pack(side="left", padx=5)
 
     def create_control_panel(self):
         """Create the control panel with filters and buttons."""
-        # Left panel for controls
-        left_panel = ttk.Frame(self.main_frame)
-        left_panel.pack(side="left", fill="y", padx=5)
+        control_panel = ttk.LabelFrame(self.main_frame, text="Control Panel", padding="5 5 5 5")
+        control_panel.pack(side="left", fill="both", padx=5, pady=5)
         
-        # Control frame
-        control_frame = ttk.LabelFrame(left_panel, text="Control Panel", padding="5")
-        control_frame.pack(fill="x", padx=5, pady=5)
+        # Create AS Number Filtering frame first
+        filter_frame = ttk.LabelFrame(control_panel, text="AS Number Filtering", padding="5 5 5 5")
+        filter_frame.pack(fill="x", padx=5, pady=5)
         
-        # Collector Selection
-        collector_frame = ttk.LabelFrame(control_frame, text="Collector Selection", padding="5")
+        # AS Number entry and buttons
+        entry_frame = ttk.Frame(filter_frame)
+        entry_frame.pack(fill="x", padx=5, pady=2)
+        
+        ttk.Label(entry_frame, text="AS Numbers:").pack(side="left", padx=5)
+        self.filter_var = tk.StringVar()
+        self.filter_entry = ttk.Entry(entry_frame, textvariable=self.filter_var)
+        self.filter_entry.pack(side="left", fill="x", expand=True, padx=5)
+        
+        # Filter buttons
+        button_frame = ttk.Frame(filter_frame)
+        button_frame.pack(fill="x", padx=5, pady=2)
+        
+        ttk.Button(button_frame, text="Add Filter", 
+                  command=self.add_as_filter).pack(side="left", padx=2)
+        ttk.Button(button_frame, text="Remove Filter", 
+                  command=self.remove_as_filter).pack(side="left", padx=2)
+        ttk.Button(button_frame, text="Clear All", 
+                  command=self.clear_as_filters).pack(side="left", padx=2)
+        ttk.Button(button_frame, text="AS Info", 
+                  command=self.show_as_info).pack(side="left", padx=2)
+        
+        # AS Listbox
+        self.as_listbox = tk.Listbox(filter_frame, height=10)
+        self.as_listbox.pack(fill="both", expand=True, padx=5, pady=2)
+        
+        # Load saved AS filters
+        saved_filters = self.settings.get("as_filters", [])
+        for as_filter in saved_filters:
+            self.as_listbox.insert(tk.END, as_filter)
+        
+        # Collector Selection frame
+        collector_frame = ttk.LabelFrame(control_panel, text="Collector Selection", padding="5 5 5 5")
         collector_frame.pack(fill="x", padx=5, pady=5)
         
+        # Region selection
         region_frame = ttk.Frame(collector_frame)
-        region_frame.pack(fill="x", padx=5, pady=5)
+        region_frame.pack(fill="x", padx=5, pady=2)
         
-        ttk.Label(region_frame, text="Region:").pack(side="left")
-        self.region_var = tk.StringVar()
-        region_combo = ttk.Combobox(region_frame, textvariable=self.region_var)
-        region_combo['values'] = self.get_all_regions()
+        ttk.Label(region_frame, text="Region:").pack(side="left", padx=5)
+        self.region_var = tk.StringVar(value=self.settings.get("region", "Asia Pacific"))
+        region_combo = ttk.Combobox(region_frame, textvariable=self.region_var, state="readonly")
+        region_combo["values"] = list(self.get_all_regions())
         region_combo.pack(side="left", fill="x", expand=True, padx=5)
-        region_combo.bind('<<ComboboxSelected>>', lambda e: self.update_collectors())
+        region_combo.bind("<<ComboboxSelected>>", self.update_collectors)
         
-        # Collector listbox with scrollbar
-        collector_list_frame = ttk.Frame(collector_frame)
-        collector_list_frame.pack(fill="both", expand=True, padx=5, pady=5)
-        
-        collector_scrollbar = ttk.Scrollbar(collector_list_frame)
-        collector_scrollbar.pack(side="right", fill="y")
-        
-        self.collector_listbox = tk.Listbox(collector_list_frame, selectmode="multiple", 
-                                          height=5, yscrollcommand=collector_scrollbar.set)
-        self.collector_listbox.pack(side="left", fill="both", expand=True)
-        collector_scrollbar.config(command=self.collector_listbox.yview)
+        # Collector listbox
+        self.collector_listbox = tk.Listbox(collector_frame, height=5, selectmode=tk.MULTIPLE)
+        self.collector_listbox.pack(fill="x", padx=5, pady=2)
         
         # Bind selection event to update button state
         self.collector_listbox.bind('<<ListboxSelect>>', self.update_start_button_state)
         
-        # AS Number Filtering
-        as_frame = ttk.LabelFrame(control_frame, text="AS Number Filtering", padding="5")
-        as_frame.pack(fill="x", padx=5, pady=5)
-        
-        # AS entry field
-        as_entry_frame = ttk.Frame(as_frame)
-        as_entry_frame.pack(fill="x", padx=5, pady=5)
-        
-        ttk.Label(as_entry_frame, text="AS Numbers:").pack(side="left")
-        self.filter_entry = ttk.Entry(as_entry_frame, textvariable=self.filter_var)
-        self.filter_entry.pack(side="left", fill="x", expand=True, padx=5)
-        
-        # AS filter buttons
-        button_frame = ttk.Frame(as_frame)
-        button_frame.pack(fill="x", padx=5, pady=5)
-        
-        # Create a frame for the first row of buttons
-        button_row1 = ttk.Frame(button_frame)
-        button_row1.pack(fill="x", pady=2)
-        ttk.Button(button_row1, text="Add Filter", command=self.add_as_filter).pack(side="left", padx=2)
-        ttk.Button(button_row1, text="Remove Filter", command=self.remove_as_filter).pack(side="left", padx=2)
-        
-        # Create a frame for the second row of buttons
-        button_row2 = ttk.Frame(button_frame)
-        button_row2.pack(fill="x", pady=2)
-        ttk.Button(button_row2, text="Clear All", command=self.clear_as_filters).pack(side="left", padx=2)
-        ttk.Button(button_row2, text="AS Info", command=self.show_as_info).pack(side="left", padx=2)
-        
-        # AS filter listbox with scrollbar
-        as_list_frame = ttk.Frame(as_frame)
-        as_list_frame.pack(fill="both", expand=True, padx=5, pady=5)
-        
-        as_scrollbar = ttk.Scrollbar(as_list_frame)
-        as_scrollbar.pack(side="right", fill="y")
-        
-        self.as_listbox = tk.Listbox(as_list_frame, height=6, yscrollcommand=as_scrollbar.set)
-        self.as_listbox.pack(side="left", fill="both", expand=True)
-        as_scrollbar.config(command=self.as_listbox.yview)
+        # Load saved collectors after creating listbox
+        self.update_collectors(None)  # Update list for current region
+        saved_collectors = self.settings.get("collectors", [])
+        if saved_collectors:
+            for i, item in enumerate(self.collector_listbox.get(0, tk.END)):
+                if item in saved_collectors:
+                    self.collector_listbox.selection_set(i)
+                    
+        # Update start button state after loading saved selections
+        self.update_start_button_state()
         
         # Status label for AS lookup
-        self.status_label = ttk.Label(as_frame, text="")
+        self.status_label = ttk.Label(filter_frame, text="")
         self.status_label.pack(fill="x", padx=5, pady=2)
         
         # Progress bar for AS lookup
         self.progress_var = tk.DoubleVar()
-        self.progress_bar = ttk.Progressbar(as_frame, mode='determinate', variable=self.progress_var)
+        self.progress_bar = ttk.Progressbar(filter_frame, mode='determinate', variable=self.progress_var)
         self.progress_bar.pack(fill="x", padx=5, pady=2)
         self.progress_bar.pack_forget()  # Hide initially
         
         # Control buttons at the bottom
-        control_button_frame = ttk.Frame(control_frame)
+        control_button_frame = ttk.Frame(control_panel)
         control_button_frame.pack(fill="x", padx=5, pady=5)
         
+        # Create Start Monitoring button (initially disabled)
         self.start_button = ttk.Button(control_button_frame, text="Start Monitoring",
                                      command=self.toggle_monitoring, state="disabled")
         self.start_button.pack(side="left", padx=5)
@@ -183,31 +184,28 @@ class BGPMonitorGUI:
         self.log_text = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, height=20)
         self.log_text.pack(fill="both", expand=True, padx=5, pady=5)
 
-    def update_collectors(self):
+    def update_collectors(self, event=None):
         """Update the collectors list based on selected region."""
-        # Clear current collectors
+        region = self.region_var.get()
         self.collector_listbox.delete(0, tk.END)
         
-        # Get collectors for selected region
-        region = self.region_var.get()
-        if region:
+        if region in self.get_all_regions():
             collectors = self.get_collectors_by_region(region)
             for collector_id in collectors:
                 location = self.get_collector_location(collector_id)
                 self.collector_listbox.insert(tk.END, f"{collector_id} ({location})")
         
-        # Update start button state
-        self.update_start_button_state()
+        self.save_current_settings()  # Save after updating region
 
     def update_start_button_state(self, event=None):
         """Update the state of the Start Monitoring button based on collector selection."""
-        if self.is_monitoring:
-            self.start_button.configure(text="Stop Monitoring", state="normal")
+        if not hasattr(self, 'start_button') or not hasattr(self, 'collector_listbox'):
+            return
+            
+        if self.collector_listbox.curselection():
+            self.start_button.configure(state="normal")
         else:
-            # Enable button only if at least one collector is selected
-            selected = len(self.collector_listbox.curselection()) > 0
-            self.start_button.configure(text="Start Monitoring", 
-                                      state="normal" if selected else "disabled")
+            self.start_button.configure(state="disabled")
 
     def add_as_filter(self):
         """Add AS number to filter list."""
@@ -235,6 +233,7 @@ class BGPMonitorGUI:
         
         # Clear the entry field
         self.filter_var.set("")
+        self.save_current_settings()  # Save after adding filter
 
     def remove_as_filter(self):
         """Remove selected AS numbers from the filter list."""
@@ -246,6 +245,7 @@ class BGPMonitorGUI:
         # Remove in reverse order to avoid index shifting
         for index in sorted(selected_indices, reverse=True):
             self.as_listbox.delete(index)
+        self.save_current_settings()  # Save after removing filter
 
     def clear_as_filters(self):
         """Clear all AS filters."""
@@ -253,6 +253,7 @@ class BGPMonitorGUI:
         self.filter_var.set("")
         self.update_as_listbox()
         self.log_message("Cleared all AS filters")
+        self.save_current_settings()  # Save after clearing filters
 
     def update_as_listbox(self):
         """Update the AS number listbox with current filters."""
@@ -435,8 +436,28 @@ class BGPMonitorGUI:
         else:
             self.log_message("Data manager not initialized")
 
+    def save_current_settings(self):
+        """Save current settings to configuration file."""
+        current_settings = {
+            "region": self.region_var.get() if hasattr(self, 'region_var') else "",
+            "collectors": [],
+            "as_filters": []
+        }
+        
+        # Save collectors if listbox exists and has selections
+        if hasattr(self, 'collector_listbox'):
+            selected = self.collector_listbox.curselection()
+            current_settings["collectors"] = [self.collector_listbox.get(i) for i in selected] if selected else []
+            
+        # Save AS filters if listbox exists
+        if hasattr(self, 'as_listbox'):
+            current_settings["as_filters"] = list(self.as_listbox.get(0, tk.END))
+            
+        self.config_manager.save_settings(current_settings)
+
     def on_closing(self):
         """Handle window closing."""
+        self.save_current_settings()
         if self.is_monitoring:
             self.stop_monitoring()
         self.root.quit()
