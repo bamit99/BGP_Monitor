@@ -9,6 +9,8 @@ import sys
 from websockets.exceptions import ConnectionClosed, WebSocketException
 import ssl
 import signal
+from utils.db_manager import BGPDatabaseManager
+from config.database_config import NEO4J_CONFIG
 
 # Set up logging with more detailed format
 logging.basicConfig(
@@ -28,6 +30,13 @@ class RIPECollector:
         self.retry_attempts = 3
         self.retry_delay = 5  # seconds
         self.running = True
+        
+        # Initialize database manager with config
+        self.db_manager = BGPDatabaseManager(
+            uri=NEO4J_CONFIG['uri'],
+            username=NEO4J_CONFIG['username'],
+            password=NEO4J_CONFIG['password']
+        )
         
         # Define available RRC collectors
         self.collectors = {
@@ -101,9 +110,20 @@ class RIPECollector:
         except asyncio.CancelledError:
             pass
 
-    def analyze_update(self, timestamp, prefix, as_path, peer_asn):
+    def analyze_update(self, timestamp, prefix, as_path, peer_asn, collector):
         """Analyze BGP updates for significant changes and potential issues."""
         try:
+            # Store update in Neo4j
+            self.db_manager.store_bgp_update(
+                timestamp=timestamp,
+                collector=collector,
+                peer_asn=peer_asn,
+                prefix=prefix,
+                as_path=as_path,
+                next_hop="",  # Add next_hop if available
+                communities=None  # Add communities if available
+            )
+            
             # 1. Track prefix history
             if prefix not in self.prefix_history:
                 self.prefix_history[prefix] = []
@@ -162,6 +182,14 @@ class RIPECollector:
                 reasons.append(f"Unusually long AS path ({path_length} hops)")
             
             if suspicious:
+                # Store suspicious update in Neo4j
+                self.db_manager.store_suspicious_update(
+                    timestamp=timestamp,
+                    prefix=prefix,
+                    as_path=as_path,
+                    reasons=reasons
+                )
+                
                 alert = {
                     'timestamp': timestamp,
                     'prefix': prefix,
@@ -197,20 +225,33 @@ class RIPECollector:
                 print(f"Time: {timestamp}")
                 print(f"Collector: {collector} (Peer AS{peer_asn})")
                 print(f"Type: BGP Announcement")
+                
+                # Get AS path once since it's the same for all prefixes in this update
+                as_path = ",".join(map(str, data.get("path", [])))
+                next_hop = announcements[0].get("next_hop", "") if announcements else ""
+                communities = data.get("community", [])
+                
+                # Process each prefix in the announcement
                 for announcement in announcements:
-                    prefix = announcement.get("prefix", "")
-                    next_hop = announcement.get("next_hop", "")
-                    as_path = ",".join(map(str, data.get("path", [])))
-                    communities = data.get("community", [])
+                    prefixes = announcement.get("prefixes", [])
+                    if not prefixes:
+                        # Try single prefix format
+                        prefix = announcement.get("prefix")
+                        if prefix:
+                            prefixes = [prefix]
                     
-                    print(f"\nPrefix: {prefix}")
-                    print(f"AS Path: {as_path}")
-                    print(f"Next Hop: {next_hop}")
-                    if communities:
-                        print(f"Communities: {communities}")
-                    
-                    # Analyze this update
-                    self.analyze_update(timestamp, prefix, as_path, peer_asn)
+                    for prefix in prefixes:
+                        if not prefix:
+                            continue
+                            
+                        print(f"\nPrefix: {prefix}")
+                        print(f"AS Path: {as_path}")
+                        print(f"Next Hop: {next_hop}")
+                        if communities:
+                            print(f"Communities: {communities}")
+                        
+                        # Store in Neo4j and analyze this update
+                        self.analyze_update(timestamp, prefix, as_path, peer_asn, collector)
                     
                 print(f"{'='*80}")
             
@@ -371,6 +412,9 @@ class RIPECollector:
                     await websocket.close()
                 except:
                     pass
+            # Close Neo4j connection
+            self.db_manager.close()
+            
             print("\n\nFinal Update Statistics:")
             print("=" * 50)
             for collector, count in update_counts.items():
