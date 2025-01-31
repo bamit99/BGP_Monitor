@@ -1,19 +1,22 @@
 # BGP Monitor
 
-A real-time BGP monitoring tool that connects to RIPE RIS collectors and allows filtering of BGP updates by AS numbers.
+A real-time BGP monitoring tool that connects to RIPE RIS collectors and stores BGP updates in both Neo4j graph database and CSV files for comprehensive analysis.
 
 ## Features
 
 - Real-time BGP update monitoring from RIPE RIS collectors
 - Region-based collector selection (Asia Pacific, Europe, etc.)
-- AS path filtering with real-time feedback
+- Dual storage system:
+  - Neo4j graph database for relationship analysis
+  - CSV files for traditional data analysis
+- AS path tracking and change detection
+- Suspicious update detection
 - AS information lookup from multiple sources:
   - PeeringDB
   - ARIN
   - APNIC
   - RADB
   - RIPE
-- Automatic data storage in CSV format with timestamps
 
 ## Installation
 
@@ -22,6 +25,10 @@ A real-time BGP monitoring tool that connects to RIPE RIS collectors and allows 
 ```bash
 pip install -r requirements.txt
 ```
+3. Set up Neo4j:
+   - Install Neo4j Database
+   - Create a new database
+   - Update connection details in `config/database_config.py`
 
 ## Usage
 
@@ -37,22 +44,24 @@ python main.py
    - Choose one or multiple collectors from the selected region
    - Each collector shows its location (e.g., Tokyo, Japan)
 
-2. **AS Filtering**
-   - Add AS numbers via entry field
-   - View added AS numbers in listbox
-   - Remove selected AS numbers
-   - Clear all AS filters
-   - Only see BGP updates containing filtered AS numbers in paths
+2. **BGP Update Storage**
+   - Neo4j Graph Database:
+     - Stores updates with relationships
+     - Tracks AS path changes
+     - Monitors suspicious patterns
+     - Enables complex graph queries
+   - CSV Storage:
+     - Timestamp-based files
+     - Traditional data analysis
+     - Historical record keeping
 
-3. **AS Information Lookup**
-   - Look up AS details by selecting from list or entering AS number
-   - View comprehensive AS information:
-     - Basic details (Name, Description)
-     - Network information (Type, Scope, Traffic levels)
-     - Location information
-     - Peering policies
-     - Website
-   - Information is cached locally for 24 hours
+3. **AS Path Analysis**
+   - Real-time AS path change detection
+   - Suspicious pattern monitoring:
+     - Multiple rapid changes
+     - Unusual path lengths
+     - Unexpected AS appearances
+   - Graph-based relationship analysis
 
 4. **BGP Update Monitoring**
    - Start/Stop monitoring from selected collectors
@@ -65,49 +74,62 @@ python main.py
      - AS Path
      - Origin
      - Withdrawals (if any)
-   - Automatic CSV storage with all update details
 
-5. **Data Management**
-   - CSV files created automatically with timestamps
-   - Direct "Open Data" button to access stored files
-   - AS information cached in cache directory
-   - Clear log functionality
+5. **Data Analysis**
+   - Neo4j Browser for graph queries
+   - CSV files for traditional analysis
+   - Built-in validation tools
+   - Suspicious update tracking
 
 ## File Structure
 
-- `data/` - BGP update CSV files (automatically created)
-- `cache/` - AS information cache
+- `collected_data/` - BGP update CSV files
+- `config/` - Configuration files
 - `gui/` - GUI components
 - `utils/` - Utility functions
-- `config/` - Configuration files
+- `tests/` - Test and validation scripts
+- `logs/` - Application logs
 
-## Notes
+## Neo4j Graph Structure
 
-- The application creates necessary directories automatically
-- AS information is cached for 24 hours for faster lookups
-- Data files are stored with timestamps for easy tracking
-- All generated files (cache, data) are git-ignored
+### Nodes
+- Update: BGP update information
+- Prefix: Network prefixes
+- AS: Autonomous System nodes
+- Collector: RIPE RIS collectors
+
+### Relationships
+- ANNOUNCES: Update to Prefix
+- PEERS_WITH: AS to AS connections
+- RECEIVED: Collector to Update
+- AFFECTS: Update to affected entities
 
 ## Dependencies
 
+- `neo4j`: Graph database driver
 - `websockets`: BGP collector connection
 - `pandas`: Data management
-- `matplotlib`: Static plotting
-- `seaborn`: Statistical visualizations
 - `networkx`: Network graph analysis
 - `plotly`: Interactive visualizations
 - `tkinter`: GUI framework
 
+## Testing
+
+Run the validation script to check Neo4j integration:
+```bash
+python tests/validate_neo4j_data.py
+```
+
+For more detailed documentation of each component, please see `HELP.md`.
+
 ## Contributing
 
-Feel free to submit issues and enhancement requests!
+1. Fork the repository
+2. Create your feature branch
+3. Commit your changes
+4. Push to the branch
+5. Create a new Pull Request
 
 ## License
 
-This project is licensed under the Creative Commons Attribution-NonCommercial 4.0 International License (CC BY-NC 4.0) - see the [LICENSE](LICENSE) file for details.
-
-Key points:
-- Free for non-commercial use with proper attribution
-- Commercial use requires explicit permission from the copyright holder
-- Modifications allowed for non-commercial use
-- Must maintain copyright and license notices
+This project is licensed under the MIT License - see the LICENSE file for details.
