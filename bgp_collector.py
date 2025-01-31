@@ -13,14 +13,24 @@ from utils.db_manager import BGPDatabaseManager
 from config.database_config import NEO4J_CONFIG
 
 # Set up logging with more detailed format
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler('bgp_collector.log')
-    ]
-)
+log_dir = Path("logs")
+log_dir.mkdir(exist_ok=True)
+
+# Create file handler with immediate flush
+file_handler = logging.FileHandler(log_dir / 'bgp_collector.log')
+file_handler.setLevel(logging.INFO)
+file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s'))
+
+# Create console handler
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.setLevel(logging.INFO)
+console_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s'))
+
+# Configure root logger
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.INFO)
+root_logger.addHandler(file_handler)
+root_logger.addHandler(console_handler)
 
 class RIPECollector:
     def __init__(self):
@@ -110,7 +120,7 @@ class RIPECollector:
         except asyncio.CancelledError:
             pass
 
-    def analyze_update(self, timestamp, prefix, as_path, peer_asn, collector):
+    def analyze_update(self, timestamp, prefix, as_path, peer_asn, collector, next_hop=None, communities=None, update_type="announcement"):
         """Analyze BGP updates for significant changes and potential issues."""
         try:
             # Store update in Neo4j
@@ -120,8 +130,9 @@ class RIPECollector:
                 peer_asn=peer_asn,
                 prefix=prefix,
                 as_path=as_path,
-                next_hop="",  # Add next_hop if available
-                communities=None  # Add communities if available
+                next_hop=next_hop,
+                communities=communities,
+                update_type=update_type
             )
             
             # 1. Track prefix history
@@ -251,8 +262,41 @@ class RIPECollector:
                             print(f"Communities: {communities}")
                         
                         # Store in Neo4j and analyze this update
+                        self.db_manager.store_bgp_update(
+                            timestamp=timestamp,
+                            collector=collector,
+                            peer_asn=peer_asn,
+                            prefix=prefix,
+                            as_path=as_path,
+                            next_hop=next_hop,
+                            communities=communities,
+                            update_type="announcement"
+                        )
                         self.analyze_update(timestamp, prefix, as_path, peer_asn, collector)
                     
+                print(f"{'='*80}")
+            
+            # Process withdrawals
+            withdrawals = data.get("withdrawals", [])
+            if withdrawals:
+                print(f"\n{'='*80}")
+                print(f"Time: {timestamp}")
+                print(f"Collector: {collector} (Peer AS{peer_asn})")
+                print(f"Type: BGP Withdrawal")
+                
+                for prefix in withdrawals:
+                    print(f"\nPrefix: {prefix}")
+                    
+                    # Store withdrawal in Neo4j
+                    self.db_manager.store_bgp_update(
+                        timestamp=timestamp,
+                        collector=collector,
+                        peer_asn=peer_asn,
+                        prefix=prefix,
+                        update_type="withdrawal"
+                    )
+                    self.analyze_update(timestamp, prefix, None, peer_asn, collector, update_type="withdrawal")
+                
                 print(f"{'='*80}")
             
             return None
@@ -311,8 +355,7 @@ class RIPECollector:
                         "type": "ris_subscribe",
                         "data": {
                             "host": collector,
-                            "type": "UPDATE",
-                            "require": "announcements",
+                            "type": "ALL",
                             "socketOptions": {
                                 "acknowledge": True
                             }

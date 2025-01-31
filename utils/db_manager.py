@@ -3,6 +3,7 @@ import logging
 from pathlib import Path
 import pandas as pd
 import json
+from datetime import datetime
 
 class BGPDatabaseManager:
     def __init__(self, uri="bolt://localhost:7687", username="neo4j", password="password"):
@@ -22,70 +23,88 @@ class BGPDatabaseManager:
                 result = session.run("RETURN 1")
                 result.single()
             logging.info("✓ Successfully connected to Neo4j database")
+            
+            # Initialize schema
+            self._init_schema()
+            
         except Exception as e:
             logging.error(f"✗ Failed to connect to Neo4j: {e}")
             self.driver = None
+
+    def _init_schema(self):
+        """Initialize Neo4j schema with necessary indexes and constraints."""
+        try:
+            with self.driver.session() as session:
+                # Create constraints
+                session.run("""
+                    CREATE CONSTRAINT prefix_unique IF NOT EXISTS
+                    FOR (p:Prefix) REQUIRE p.prefix IS UNIQUE
+                """)
+                
+                # Create indexes
+                session.run("""
+                    CREATE INDEX update_timestamp IF NOT EXISTS
+                    FOR (u:Update) ON (u.timestamp)
+                """)
+                session.run("""
+                    CREATE INDEX update_type IF NOT EXISTS
+                    FOR (u:Update) ON (u.update_type)
+                """)
+                
+                logging.info("✓ Neo4j schema initialized")
+        except Exception as e:
+            logging.error(f"✗ Failed to initialize Neo4j schema: {e}")
 
     def close(self):
         """Close the database connection."""
         if self.driver:
             self.driver.close()
 
-    def store_bgp_update(self, timestamp, collector, peer_asn, prefix, as_path, next_hop, communities=None):
-        """Store BGP update in Neo4j database."""
-        if not self.driver:
-            logging.error("No database connection available")
-            return
-
-        with self.driver.session() as session:
-            try:
-                # Create or update nodes and relationships
-                cypher_query = """
-                // Create prefix node first
-                MERGE (p:Prefix {prefix: $prefix})
+    def store_bgp_update(self, timestamp, collector, peer_asn, prefix, as_path=None, next_hop=None, communities=None, update_type="announcement"):
+        """Store BGP update in Neo4j."""
+        try:
+            # Convert collections to strings for Neo4j storage
+            if communities:
+                if isinstance(communities, list):
+                    communities = ','.join(map(str, communities))
+                else:
+                    communities = str(communities)
+            
+            if as_path and isinstance(as_path, list):
+                as_path = ','.join(map(str, as_path))
+            
+            # Create properties map
+            update_props = {
+                "timestamp": timestamp.isoformat(),
+                "collector": collector,
+                "peer_asn": str(peer_asn),
+                "prefix": prefix,
+                "update_type": update_type
+            }
+            
+            # Add optional properties if present
+            if as_path:
+                update_props["as_path"] = as_path
+            if next_hop:
+                update_props["next_hop"] = next_hop
+            if communities:
+                update_props["communities"] = communities
+            
+            # Create or merge prefix node and update node
+            query = """
+            MERGE (p:Prefix {prefix: $prefix})
+            CREATE (u:Update)
+            SET u = $update_props
+            CREATE (p)-[:HAS_UPDATE]->(u)
+            """
+            
+            with self.driver.session() as session:
+                session.run(query, prefix=prefix, update_props=update_props)
+                logging.info(f"✓ Stored {update_type} for {prefix}")
                 
-                // Create collector node
-                MERGE (c:Collector {name: $collector})
-                
-                // Create update node and link it
-                CREATE (u:Update {
-                    timestamp: datetime($timestamp),
-                    peer_asn: $peer_asn,
-                    next_hop: $next_hop,
-                    communities: $communities
-                })
-                CREATE (u)-[:ANNOUNCES]->(p)
-                CREATE (c)-[:RECEIVED]->(u)
-                
-                // Create AS path
-                WITH u, $as_path as path
-                UNWIND range(0, size(path)-1) as i
-                MERGE (as1:AS {asn: path[i]})
-                WITH u, as1, i, path
-                WHERE i < size(path)-1
-                MERGE (as2:AS {asn: path[i+1]})
-                CREATE (as1)-[:PEERS_WITH {update_id: id(u)}]->(as2)
-                """
-                
-                # Convert AS path to list if it's a string
-                as_path_list = as_path.split(',') if isinstance(as_path, str) else as_path
-                
-                # Execute the query
-                session.run(
-                    cypher_query,
-                    prefix=prefix,
-                    collector=collector,
-                    timestamp=timestamp.isoformat(),
-                    peer_asn=peer_asn,
-                    next_hop=next_hop,
-                    communities=json.dumps(communities) if communities else None,
-                    as_path=as_path_list
-                )
-                logging.info(f"✓ Successfully stored BGP update for prefix {prefix}")
-                
-            except Exception as e:
-                logging.error(f"Error storing BGP update in Neo4j: {e}")
-                raise
+        except Exception as e:
+            logging.error(f"✗ Failed to store {update_type} for {prefix}: {e}")
+            raise
 
     def store_suspicious_update(self, timestamp, prefix, as_path, reasons):
         """Store suspicious BGP updates in Neo4j."""

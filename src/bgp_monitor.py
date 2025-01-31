@@ -6,6 +6,8 @@ from typing import Set, Dict, Any
 
 from utils.bgp_utils import validate_as_number, parse_as_path
 from config.collectors import get_collectors_by_region, get_collector_location
+from utils.db_manager import BGPDatabaseManager
+from config.database_config import NEO4J_CONFIG
 
 class BGPMonitor:
     def __init__(self):
@@ -13,6 +15,13 @@ class BGPMonitor:
         self.active_collectors: Set[str] = set()
         self.filtered_as_numbers: Set[int] = set()
         self.running: bool = True
+        
+        # Initialize Neo4j database manager
+        self.db_manager = BGPDatabaseManager(
+            uri=NEO4J_CONFIG['uri'],
+            username=NEO4J_CONFIG['username'],
+            password=NEO4J_CONFIG['password']
+        )
         
         # Configure logging
         logging.basicConfig(
@@ -102,6 +111,72 @@ class BGPMonitor:
         except Exception as e:
             logging.error(f"Error processing BGP message: {e}")
             return None
+            
+    async def process_message(self, message: Dict[str, Any]) -> None:
+        """Process BGP update message."""
+        try:
+            data = message.get("data", {})
+            
+            # Format timestamp
+            timestamp = datetime.fromtimestamp(data.get("timestamp", 0))
+            collector = data.get("host", "unknown")
+            peer = data.get("peer", "")
+            peer_asn = data.get("peer_asn", "")
+            
+            # Process announcements
+            announcements = data.get("announcements", [])
+            if announcements:
+                # Get AS path once since it's the same for all prefixes in this update
+                as_path = ",".join(map(str, data.get("path", [])))
+                next_hop = announcements[0].get("next_hop", "") if announcements else ""
+                communities = data.get("community", [])
+                
+                # Process each prefix in the announcement
+                for announcement in announcements:
+                    prefixes = announcement.get("prefixes", [])
+                    if not prefixes:
+                        # Try single prefix format
+                        prefix = announcement.get("prefix")
+                        if prefix:
+                            prefixes = [prefix]
+                    
+                    for prefix in prefixes:
+                        if not prefix:
+                            continue
+                            
+                        # Store in Neo4j
+                        self.db_manager.store_bgp_update(
+                            timestamp=timestamp,
+                            collector=collector,
+                            peer_asn=peer_asn,
+                            prefix=prefix,
+                            as_path=as_path,
+                            next_hop=next_hop,
+                            communities=communities,
+                            update_type="announcement"
+                        )
+                        
+                        # Log the update
+                        logging.info(f"Announcement - Prefix: {prefix}, AS Path: {as_path}")
+            
+            # Process withdrawals
+            withdrawals = data.get("withdrawals", [])
+            if withdrawals:
+                for prefix in withdrawals:
+                    # Store withdrawal in Neo4j
+                    self.db_manager.store_bgp_update(
+                        timestamp=timestamp,
+                        collector=collector,
+                        peer_asn=peer_asn,
+                        prefix=prefix,
+                        update_type="withdrawal"
+                    )
+                    
+                    # Log the withdrawal
+                    logging.info(f"Withdrawal - Prefix: {prefix}")
+            
+        except Exception as e:
+            logging.error(f"Error processing BGP message: {e}")
             
     async def connect_ris(self):
         """Connect to RIPE RIS service."""

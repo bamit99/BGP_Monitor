@@ -1,100 +1,146 @@
 """Validate Neo4j data storage for BGP updates."""
 import sys
 from pathlib import Path
-sys.path.append(str(Path(__file__).parent.parent))
+from datetime import datetime, timedelta
+
+# Add project root to Python path
+project_root = Path(__file__).parent.parent
+sys.path.append(str(project_root))
 
 from utils.db_manager import BGPDatabaseManager
 from config.database_config import NEO4J_CONFIG
-import datetime
 
 def validate_neo4j_data():
-    """Check if BGP data is being stored in Neo4j."""
-    print("\nValidating Neo4j BGP Data Storage...")
-    print("=" * 50)
-    
-    db_manager = BGPDatabaseManager(
-        uri=NEO4J_CONFIG['uri'],
-        username=NEO4J_CONFIG['username'],
-        password=NEO4J_CONFIG['password']
-    )
-    
+    """Validate the data stored in Neo4j database."""
+    db_manager = None
     try:
+        print("\nTesting Neo4j Connection...")
+        db_manager = BGPDatabaseManager(**NEO4J_CONFIG)
+        
+        # Test connection with a simple query
         with db_manager.driver.session() as session:
-            # 1. Check total number of updates
-            result = session.run("""
-                MATCH (u:Update)
-                RETURN count(u) as update_count
-            """)
-            update_count = result.single()["update_count"]
-            print(f"\n1. Total BGP Updates: {update_count}")
+            result = session.run("RETURN 1 as test")
+            test_value = result.single()["test"]
+            print(f"Connection successful! Test query returned: {test_value}")
+        
+        print("\nValidating Neo4j BGP Data Storage...")
+        print("=" * 50 + "\n")
+        
+        with db_manager.driver.session() as session:
+            # Clear any existing data
+            session.run("MATCH (n) DETACH DELETE n")
+            print("Cleared existing data")
             
-            # 2. Check updates in the last hour
-            result = session.run("""
-                MATCH (u:Update)
-                WHERE u.timestamp > datetime() - duration({hours: 1})
-                RETURN count(u) as recent_count
-            """)
-            recent_count = result.single()["recent_count"]
-            print(f"2. Updates in last hour: {recent_count}")
+            # Test storing a sample update
+            print("\nTesting update storage...")
+            test_update = {
+                "timestamp": datetime.now(),
+                "collector": "test-collector",
+                "peer_asn": "12345",
+                "prefix": "192.0.2.0/24",
+                "as_path": "12345,23456",
+                "next_hop": "192.0.2.1",
+                "update_type": "announcement"
+            }
             
-            # 3. Check prefixes
-            result = session.run("""
-                MATCH (p:Prefix)
-                RETURN count(p) as prefix_count
-            """)
-            prefix_count = result.single()["prefix_count"]
-            print(f"\n3. Total Prefix Nodes: {prefix_count}")
+            success = db_manager.store_bgp_update(**test_update)
+            print(f"Test update storage {'successful' if success else 'failed'}")
             
-            # 4. Sample prefixes with their updates
-            result = session.run("""
-                MATCH (p:Prefix)<-[:ANNOUNCES]-(u:Update)
-                WITH p, count(u) as update_count
-                RETURN p.prefix as prefix, update_count
-                ORDER BY update_count DESC
-                LIMIT 5
-            """)
+            # 1. Count updates by type
+            print("\n1. BGP Updates by Type:")
+            query = """
+            MATCH (u:Update)
+            WITH u.update_type as type, COUNT(u) as count
+            ORDER BY count DESC
+            RETURN type, count
+            """
+            result = session.run(query)
+            for record in result:
+                print(f"- {record['type'] or 'unknown'}: {record['count']}")
+            
+            print("\n2. Updates in last hour by type:")
+            current_time = datetime.now()
+            one_hour_ago = (current_time - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S")
+            query = """
+            MATCH (u:Update)
+            WHERE u.timestamp > $one_hour_ago
+            WITH u.update_type as type, COUNT(u) as count
+            ORDER BY count DESC
+            RETURN type, count
+            """
+            result = session.run(query, one_hour_ago=one_hour_ago)
+            for record in result:
+                print(f"- {record['type'] or 'unknown'}: {record['count']}")
+            
+            # 3. Count unique prefixes
+            print("\n3. Total Prefix Nodes:")
+            query = """
+            MATCH (p:Prefix)
+            RETURN COUNT(p) as count
+            """
+            result = session.run(query)
+            count = result.single()["count"]
+            print(f"{count}")
+            
+            # 4. Most active prefixes
             print("\n4. Most Active Prefixes:")
+            query = """
+            MATCH (u:Update)-[:AFFECTS]->(p:Prefix)
+            WITH p.prefix as prefix,
+                 COUNT(u) as total,
+                 COLLECT(DISTINCT u.update_type) as types,
+                 COUNT(CASE WHEN u.update_type = 'announcement' THEN u END) as announcements,
+                 COUNT(CASE WHEN u.update_type = 'withdrawal' THEN u END) as withdrawals
+            ORDER BY total DESC
+            LIMIT 5
+            RETURN prefix, announcements, withdrawals, total, types
+            """
+            result = session.run(query)
             for record in result:
-                print(f"   - {record['prefix']}: {record['update_count']} updates")
+                print(f"\n   Prefix: {record['prefix']}")
+                print(f"   - Announcements: {record['announcements']}")
+                print(f"   - Withdrawals: {record['withdrawals']}")
+                print(f"   - Total Updates: {record['total']}")
+                print(f"   - Update Types: {', '.join(record['types'])}")
             
-            # 5. Check AS numbers
-            result = session.run("""
-                MATCH (as:AS)
-                RETURN count(as) as as_count
-            """)
-            as_count = result.single()["as_count"]
-            print(f"\n5. Total AS Nodes: {as_count}")
-            
-            # 6. Check collectors
-            result = session.run("""
-                MATCH (c:Collector)-[:RECEIVED]->(u:Update)
-                WITH c.name as collector, count(u) as updates
-                RETURN collector, updates
-                ORDER BY updates DESC
-            """)
-            print("\n6. Updates per Collector:")
+            # 5. Recent updates
+            print("\nMost Recent Updates (last 10 seconds):")
+            ten_seconds_ago = (current_time - timedelta(seconds=10)).strftime("%Y-%m-%dT%H:%M:%S")
+            query = """
+            MATCH (u:Update)-[:AFFECTS]->(p:Prefix)
+            WHERE u.timestamp > $ten_seconds_ago
+            WITH u, p
+            ORDER BY u.timestamp DESC
+            LIMIT 5
+            RETURN u.timestamp as timestamp,
+                   u.collector as collector,
+                   u.update_type as type,
+                   p.prefix as prefix,
+                   u.as_path as as_path
+            """
+            result = session.run(query, ten_seconds_ago=ten_seconds_ago)
             for record in result:
-                print(f"   - {record['collector']}: {record['updates']} updates")
+                print(f"\n   Update:")
+                print(f"   - Time: {record['timestamp']}")
+                print(f"   - Collector: {record['collector']}")
+                print(f"   - Type: {record['type']}")
+                print(f"   - Prefix: {record['prefix']}")
+                if record['as_path']:
+                    print(f"   - AS Path: {record['as_path']}")
             
-            # 7. Get sample of recent updates
-            result = session.run("""
-                MATCH (c:Collector)-[:RECEIVED]->(u:Update)-[:ANNOUNCES]->(p:Prefix)
-                RETURN c.name as collector, u.timestamp as timestamp, 
-                       p.prefix as prefix, u.peer_asn as peer_asn
-                ORDER BY u.timestamp DESC
-                LIMIT 5
-            """)
-            print("\n7. Most Recent Updates:")
-            for record in result:
-                print(f"   - [{record['collector']}] {record['timestamp']}: "
-                      f"Prefix {record['prefix']} from AS{record['peer_asn']}")
-            
-            print("\nValidation Complete!")
-            
+        print("\nValidation Complete!")
+        
     except Exception as e:
-        print(f"\n✗ Error during validation: {e}")
+        print(f"\nError during validation: {str(e)}")
+        print(f"Error type: {type(e).__name__}")
+        if hasattr(e, 'message'):
+            print(f"Error message: {e.message}")
+        import traceback
+        print("\nFull traceback:")
+        traceback.print_exc()
     finally:
-        db_manager.close()
+        if db_manager:
+            db_manager.close()
 
 if __name__ == "__main__":
     validate_neo4j_data()

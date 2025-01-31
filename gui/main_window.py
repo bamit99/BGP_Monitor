@@ -16,6 +16,7 @@ import os
 import subprocess
 from pathlib import Path
 from utils.config_manager import ConfigManager
+import logging
 
 class BGPMonitorGUI:
     def __init__(self, root):
@@ -266,24 +267,43 @@ class BGPMonitorGUI:
         if not self.is_monitoring:
             # Start monitoring
             self.is_monitoring = True
-            self.start_button.configure(text="Stop Monitoring", state="normal")
-            self.update_status("Monitoring active...")
+            self.start_button.config(text="Stop Monitoring")
+            self.update_status("Starting BGP monitoring...")
             
-            # Start monitoring in a separate thread
+            # Create and start monitor thread
             self.monitor_thread = threading.Thread(target=self._run_monitoring_loop)
+            self.monitor_thread.daemon = True  # Thread will be killed when main thread exits
             self.monitor_thread.start()
+            
         else:
             # Stop monitoring
             self.stop_monitoring()
 
     def _run_monitoring_loop(self):
         """Run the monitoring loop in a separate thread."""
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
         try:
+            # Create new event loop for this thread
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
+            # Run the monitoring
             loop.run_until_complete(self.start_monitoring())
+            
+        except Exception as e:
+            self.log_message(f"Error in monitoring: {e}")
         finally:
-            loop.close()
+            # Schedule stop_monitoring to run in the main thread
+            self.root.after(0, self.stop_monitoring)
+            try:
+                # Cancel all remaining tasks
+                for task in asyncio.all_tasks(loop):
+                    task.cancel()
+                # Run loop one last time to clean up
+                loop.run_until_complete(asyncio.sleep(0))
+            except Exception as e:
+                logging.error(f"Error cleaning up loop: {e}")
+            finally:
+                loop.close()
 
     async def start_monitoring(self):
         """Start BGP monitoring."""
@@ -296,7 +316,7 @@ class BGPMonitorGUI:
             
             selected_collectors = [self.collector_listbox.get(i).split()[0] for i in selected_indices]
             
-            # Initialize connection manager
+            # Initialize connection manager with callback
             self.connection_manager = ConnectionManager(self.process_update)
             
             # Connect to RIPE RIS
@@ -307,104 +327,47 @@ class BGPMonitorGUI:
             # Subscribe to selected collectors
             for collector in selected_collectors:
                 if await self.connection_manager.subscribe(collector):
-                    self.log_message(f"Subscribed to {collector}")
+                    self.log_message(f" Subscribed to {collector}")
                 else:
-                    self.log_message(f"Failed to subscribe to {collector}")
+                    self.log_message(f" Failed to subscribe to {collector}")
             
             # Start listening for updates
+            self.log_message("Listening for BGP updates...")
             await self.connection_manager.listen()
             
         except Exception as e:
             self.log_message(f"Error in monitoring: {e}")
             self.stop_monitoring()
 
-    async def process_update(self, message):
-        """Process BGP update message."""
-        try:
-            # Parse message if it's a string, otherwise use as is
-            if isinstance(message, str):
-                data = json.loads(message)
-            else:
-                data = message
-
-            if 'type' in data and data['type'] == 'ris_message':
-                update = data['data']
-                
-                # Get list of AS numbers from the listbox
-                as_filters = set()
-                for i in range(self.as_listbox.size()):
-                    as_text = self.as_listbox.get(i)
-                    match = re.match(r'AS(\d+)', as_text)
-                    if match:
-                        as_filters.add(match.group(1))
-                
-                # If there are AS filters, check if the update matches any
-                if as_filters:
-                    # Extract AS path from the update
-                    as_path = []
-                    if 'path' in update:
-                        as_path = [str(asn) for asn in update['path']]
-                    
-                    # Skip if none of the filtered AS numbers are in the path
-                    if not any(asn in as_path for asn in as_filters):
-                        return
-                
-                # Extract prefixes from announcements
-                prefix = 'N/A'
-                next_hop = 'N/A'
-                if update.get('announcements'):
-                    announcement = update['announcements'][0]  # Take first announcement
-                    prefix = ', '.join(announcement.get('prefixes', []))
-                    next_hop = announcement.get('next_hop', 'N/A')
-
-                # Create log message
-                formatted_time = datetime.fromtimestamp(update['timestamp']).strftime('%Y-%m-%d %H:%M:%S')
-                peer = f"{update.get('peer', 'N/A')} (AS{update.get('peer_asn', 'N/A')})"
-                path = ' > '.join(str(asn) for asn in update.get('path', []))
-                
-                log_msg = (
-                    f"{formatted_time} - "
-                    f"Prefix: {prefix}, "
-                    f"Next Hop: {next_hop}, "
-                    f"Peer: {peer}, "
-                    f"Path: {path}, "
-                    f"Origin: {update.get('origin', 'N/A')}"
-                )
-                
-                # Add withdrawals if any
-                if update.get('withdrawals'):
-                    withdrawals = ', '.join(update['withdrawals'])
-                    log_msg += f"\nWithdrawals: {withdrawals}"
-                
-                self.log_message(log_msg)
-                
-                # Save to file if data manager is initialized
-                if self.data_manager:
-                    self.data_manager.save_update(update)
-                    
-        except json.JSONDecodeError:
-            self.log_message("Error: Invalid message format")
-        except Exception as e:
-            self.log_message(f"Error processing message: {str(e)}")
-
     def stop_monitoring(self):
         """Stop BGP monitoring."""
-        self.is_monitoring = False
-        if self.connection_manager:
-            self.connection_manager.stop()
-            self.connection_manager = None
-        if self.data_manager:
-            self.data_manager.close_current_file()
-        
-        # Wait for monitor thread to finish
-        if self.monitor_thread and self.monitor_thread.is_alive():
-            self.monitor_thread.join(timeout=5)  # Wait up to 5 seconds
+        if self.is_monitoring:
+            self.is_monitoring = False
+            self.start_button.config(text="Start Monitoring")
+            self.update_status("Stopping monitoring...")
             
-        self.start_button.configure(text="Start Monitoring")
-        self.update_status("Monitoring stopped")
-        self.log_message("Monitoring stopped")
-        # Update button state after stopping
-        self.update_start_button_state()
+            # Stop the connection manager first
+            if self.connection_manager:
+                try:
+                    self.connection_manager.stop()
+                except Exception as e:
+                    logging.error(f"Error stopping connection manager: {e}")
+                finally:
+                    self.connection_manager = None
+            
+            # Wait for monitor thread to finish
+            if self.monitor_thread and self.monitor_thread.is_alive():
+                try:
+                    self.monitor_thread.join(timeout=2.0)  # Wait up to 2 seconds
+                    if self.monitor_thread.is_alive():
+                        logging.warning("Monitor thread did not stop cleanly")
+                except Exception as e:
+                    logging.error(f"Error joining monitor thread: {e}")
+                finally:
+                    self.monitor_thread = None
+            
+            self.update_status("Monitoring stopped")
+            self.log_message("✓ Monitoring stopped")
 
     def log_message(self, message):
         """Add message to log in a thread-safe way."""
@@ -457,11 +420,11 @@ class BGPMonitorGUI:
 
     def on_closing(self):
         """Handle window closing."""
-        self.save_current_settings()
-        if self.is_monitoring:
+        try:
             self.stop_monitoring()
-        self.root.quit()
-        self.root.destroy()
+        finally:
+            self.root.quit()
+            self.root.destroy()
 
     def show_as_info(self):
         """Show information about AS numbers from either selection or entry field."""
@@ -674,6 +637,128 @@ This application is licensed under CC BY-NC 4.0. Commercial use requires explici
         x = self.root.winfo_x() + (self.root.winfo_width() - dialog.winfo_width()) // 2
         y = self.root.winfo_y() + (self.root.winfo_height() - dialog.winfo_height()) // 2
         dialog.geometry(f"+{x}+{y}")
+
+    async def process_update(self, message):
+        """Process BGP update message."""
+        try:
+            # Parse message if it's a string, otherwise use as is
+            if isinstance(message, str):
+                data = json.loads(message)
+            else:
+                data = message
+
+            if 'type' in data and data['type'] == 'ris_message':
+                update = data['data']
+                
+                # Get list of AS numbers from the listbox
+                as_filters = set()
+                for i in range(self.as_listbox.size()):
+                    as_text = self.as_listbox.get(i)
+                    match = re.match(r'AS(\d+)', as_text)
+                    if match:
+                        as_filters.add(match.group(1))
+                
+                # If there are AS filters, check if the update matches any
+                if as_filters:
+                    # Extract AS path from the update
+                    as_path = []
+                    if 'path' in update:
+                        as_path = [str(asn) for asn in update['path']]
+                    
+                    # Skip if none of the filtered AS numbers are in the path
+                    if not any(asn in as_path for asn in as_filters):
+                        return
+                
+                # Format timestamp
+                timestamp = datetime.fromtimestamp(update.get('timestamp', 0))
+                collector = update.get('host', 'unknown')
+                peer_asn = update.get('peer_asn', '')
+                
+                # Process announcements
+                if update.get('announcements'):
+                    # Get AS path and communities
+                    as_path = update.get('path', [])  # Keep as list, db_manager will handle conversion
+                    communities = update.get('community', [])  # Keep as list, db_manager will handle conversion
+                    
+                    for announcement in update['announcements']:
+                        next_hop = announcement.get('next_hop', '')
+                        prefixes = announcement.get('prefixes', [])
+                        if not prefixes:
+                            prefix = announcement.get('prefix')
+                            if prefix:
+                                prefixes = [prefix]
+                        
+                        for prefix in prefixes:
+                            if not prefix:
+                                continue
+                            
+                            # Store in Neo4j
+                            try:
+                                self.bgp_monitor.db_manager.store_bgp_update(
+                                    timestamp=timestamp,
+                                    collector=collector,
+                                    peer_asn=peer_asn,
+                                    prefix=prefix,
+                                    as_path=as_path,
+                                    next_hop=next_hop,
+                                    communities=communities,
+                                    update_type="announcement"
+                                )
+                            except Exception as e:
+                                self.log_message(f"Error storing announcement: {e}")
+                
+                # Process withdrawals
+                if update.get('withdrawals'):
+                    for prefix in update['withdrawals']:
+                        try:
+                            # Store withdrawal in Neo4j
+                            self.bgp_monitor.db_manager.store_bgp_update(
+                                timestamp=timestamp,
+                                collector=collector,
+                                peer_asn=peer_asn,
+                                prefix=prefix,
+                                update_type="withdrawal"
+                            )
+                        except Exception as e:
+                            self.log_message(f"Error storing withdrawal: {e}")
+                
+                # Create log message for display
+                formatted_time = timestamp.strftime('%Y-%m-%d %H:%M:%S')
+                peer = f"{update.get('peer', 'N/A')} (AS{peer_asn})"
+                path = ' > '.join(str(asn) for asn in update.get('path', []))
+                
+                # Get prefixes for display
+                prefixes = []
+                if update.get('announcements'):
+                    for announcement in update['announcements']:
+                        if announcement.get('prefixes'):
+                            prefixes.extend(announcement['prefixes'])
+                        elif announcement.get('prefix'):
+                            prefixes.append(announcement['prefix'])
+                
+                log_msg = (
+                    f"{formatted_time} - "
+                    f"Type: {'Announcement' if update.get('announcements') else 'Withdrawal'}, "
+                    f"Prefix: {', '.join(prefixes) if prefixes else 'N/A'}, "
+                    f"Peer: {peer}, "
+                    f"Path: {path}"
+                )
+                
+                # Add withdrawals to log message if any
+                if update.get('withdrawals'):
+                    withdrawals = ', '.join(update['withdrawals'])
+                    log_msg += f"\nWithdrawals: {withdrawals}"
+                
+                self.log_message(log_msg)
+                
+                # Save to file if data manager is initialized
+                if self.data_manager:
+                    self.data_manager.save_update(update)
+                    
+        except json.JSONDecodeError:
+            self.log_message("Error: Invalid message format")
+        except Exception as e:
+            self.log_message(f"Error processing message: {str(e)}")
 
 def main():
     root = tk.Tk()
