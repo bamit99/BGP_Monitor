@@ -6,7 +6,7 @@ import json
 from datetime import datetime
 
 class BGPDatabaseManager:
-    def __init__(self, uri="bolt://localhost:7687", username="neo4j", password="password"):
+    def __init__(self, uri="bolt://localhost:7687", username="neo4j", password=""):
         """Initialize the database manager with Neo4j connection details."""
         self.uri = uri
         self.username = username

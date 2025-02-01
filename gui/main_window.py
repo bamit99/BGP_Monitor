@@ -73,16 +73,21 @@ class BGPMonitorGUI:
         about_button = ttk.Button(about_frame, text="About", command=self.show_about, width=10)
         about_button.pack(side="left", padx=5)
         
-        # Add Neo4j Connection Status LED
-        self.db_status_led = tk.Label(root, text="DB: Disconnected", bg="red", fg="white", width=15)
+        # Add Neo4j Connection Status LED with IP and DB info
+        self.db_status_led = tk.Label(root, text="DB: Disconnected", bg="red", fg="white", width=40)
         self.db_status_led.pack(side=tk.BOTTOM, pady=5)
 
         # Add Connect DB button
         self.connect_db_button = tk.Button(root, text="Connect DB", command=self.open_db_config_window, width=15)
         self.connect_db_button.pack(side=tk.BOTTOM, pady=5)
 
-        # Start checking the DB connection status periodically
+        # Add a label to display the count of Update entries
+        self.entries_label = tk.Label(root, text="Entry Count: 0", bg="white", fg="black", width=30)
+        self.entries_label.pack(side=tk.BOTTOM, pady=5)
+
+        # Start initial checks
         self.check_db_connection()
+        self.update_entries_count()
         
     def create_control_panel(self):
         """Create the control panel with filters and buttons."""
@@ -773,10 +778,41 @@ This application is licensed under CC BY-NC 4.0. Commercial use requires explici
             self.log_message(f"Error processing message: {str(e)}")
 
     def update_db_status_led(self, connected):
+        """Update the connection status LED with connection info."""
+        from config.database_config import NEO4J_CONFIG
+        uri = NEO4J_CONFIG.get("uri", "")
+        ip = uri.split("://")[-1].split(":")[0] if uri else "N/A"
+        db_name = "neo4j"  # Default Neo4j database name
+
         if connected:
-            self.db_status_led.config(text="DB: Connected", bg="green")
+            self.db_status_led.config(text=f"DB: Connected - {ip} ({db_name})", bg="green")
         else:
             self.db_status_led.config(text="DB: Disconnected", bg="red")
+
+    def update_entries_count(self):
+        """Query the database for the count of 'Update' nodes and update the label."""
+        try:
+            from config.database_config import NEO4J_CONFIG
+            from neo4j import GraphDatabase
+            uri = NEO4J_CONFIG.get("uri")
+            username = NEO4J_CONFIG.get("username")
+            password = NEO4J_CONFIG.get("password")
+            if not uri or not username or not password:
+                self.entries_label.config(text="Entry Count: N/A")
+                return
+            driver = GraphDatabase.driver(uri, auth=(username, password))
+            with driver.session() as session:
+                result = session.run("MATCH (u:Update) RETURN count(u) AS count")
+                record = result.single()
+                count = record.get("count") if record else 0
+            driver.close()
+            self.entries_label.config(text=f"Entry Count: {count}")
+        except Exception as e:
+            self.entries_label.config(text="Entry Count: Error")
+            print(f"Error updating entry count: {e}")
+        finally:
+            # Schedule next update in 60 seconds (60000 milliseconds)
+            self.root.after(60000, self.update_entries_count)
 
     def check_db_connection(self):
         # Call the DB check function (assumed to return a boolean)
