@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BGP Monitor Test Suite</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+</head>
+<body class="bg-gray-100">
+    <div class="container mx-auto px-4 py-8">
+        <h1 class="text-3xl font-bold mb-8 text-center text-gray-800">BGP Monitor Test Suite</h1>
+        
+        <div class="grid md:grid-cols-2 gap-6">
+            <!-- Test Controls -->
+            <div class="bg-white rounded-lg shadow p-6">
+                <h2 class="text-xl font-semibold mb-4 text-gray-700">Available Tests</h2>
+                <div class="space-y-4">
+                    <div class="test-container">
+                        <button onclick="runTest('websocket')" class="w-3/4 bg-blue-500 hover:bg-blue-600 text-white font-semibold py-2 px-4 rounded">
+                            Test WebSocket Connection
+                        </button>
+                        <button onclick="stopTest('websocket')" class="w-1/4 ml-2 bg-red-500 hover:bg-red-600 text-white font-semibold py-2 px-4 rounded hidden stop-btn" data-test="websocket">
+                            Stop
+                        </button>
+                    </div>
+                    <div class="test-container">
+                        <button onclick="runTest('neo4j')" class="w-3/4 bg-green-500 hover:bg-green-600 text-white font-semibold py-2 px-4 rounded">
+                            Test Neo4j Connection
+                        </button>
+                        <button onclick="stopTest('neo4j')" class="w-1/4 ml-2 bg-red-500 hover:bg-red-600 text-white font-semibold py-2 px-4 rounded hidden stop-btn" data-test="neo4j">
+                            Stop
+                        </button>
+                    </div>
+                    <div class="test-container">
+                        <button onclick="runTest('validate')" class="w-3/4 bg-purple-500 hover:bg-purple-600 text-white font-semibold py-2 px-4 rounded">
+                            Validate Neo4j Data
+                        </button>
+                        <button onclick="stopTest('validate')" class="w-1/4 ml-2 bg-red-500 hover:bg-red-600 text-white font-semibold py-2 px-4 rounded hidden stop-btn" data-test="validate">
+                            Stop
+                        </button>
+                    </div>
+                    <div class="test-container">
+                        <button onclick="runTest('live_updates')" class="w-3/4 bg-yellow-500 hover:bg-yellow-600 text-white font-semibold py-2 px-4 rounded">
+                            Verify Live Updates
+                        </button>
+                        <button onclick="stopTest('live_updates')" class="w-1/4 ml-2 bg-red-500 hover:bg-red-600 text-white font-semibold py-2 px-4 rounded hidden stop-btn" data-test="live_updates">
+                            Stop
+                        </button>
+                    </div>
+                    <div class="test-container">
+                        <button onclick="runTest('suspicious')" class="w-3/4 bg-red-500 hover:bg-red-600 text-white font-semibold py-2 px-4 rounded">
+                            Query Suspicious Updates
+                        </button>
+                        <button onclick="stopTest('suspicious')" class="w-1/4 ml-2 bg-red-500 hover:bg-red-600 text-white font-semibold py-2 px-4 rounded hidden stop-btn" data-test="suspicious">
+                            Stop
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Test Output -->
+            <div class="bg-white rounded-lg shadow p-6">
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-xl font-semibold text-gray-700">Test Output</h2>
+                    <button onclick="clearOutput()" class="bg-gray-500 hover:bg-gray-600 text-white font-semibold py-1 px-3 rounded text-sm">
+                        Clear
+                    </button>
+                </div>
+                <div id="output" class="font-mono text-sm bg-gray-900 text-green-400 p-4 rounded h-96 overflow-y-auto whitespace-pre"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const socket = io();
+        const output = document.getElementById('output');
+        let isFirstOutput = true;
+        let activeTests = {};
+
+        function runTest(testName) {
+            if (isFirstOutput) {
+                output.textContent = '';
+                isFirstOutput = false;
+            }
+            output.textContent += `\n[${new Date().toLocaleTimeString()}] Running ${testName} test...\n`;
+            output.scrollTop = output.scrollHeight;
+            socket.emit('run_test', { test: testName });
+        }
+
+        function stopTest(testName) {
+            const testId = activeTests[testName];
+            if (testId) {
+                socket.emit('stop_test', { test_id: testId });
+                document.querySelector(`.stop-btn[data-test="${testName}"]`).classList.add('hidden');
+            }
+        }
+
+        function clearOutput() {
+            output.textContent = '';
+            isFirstOutput = true;
+        }
+
+        socket.on('test_started', function(data) {
+            activeTests[data.test_name] = data.test_id;
+            document.querySelector(`.stop-btn[data-test="${data.test_name}"]`).classList.remove('hidden');
+        });
+
+        socket.on('test_stopped', function(data) {
+            const testName = Object.keys(activeTests).find(key => activeTests[key] === data.test_id);
+            if (testName) {
+                document.querySelector(`.stop-btn[data-test="${testName}"]`).classList.add('hidden');
+                delete activeTests[testName];
+            }
+        });
+
+        socket.on('test_output', function(data) {
+            const timestamp = new Date().toLocaleTimeString();
+            const statusColor = data.status === 'error' ? '\x1b[31m' : '\x1b[32m';
+            output.textContent += data.output;
+            output.scrollTop = output.scrollHeight;
+        });
+
+        // Initial message
+        output.textContent = 'Welcome to BGP Monitor Test Suite!\nSelect a test to run...';
+    </script>
+</body>
+</html>
