@@ -60,8 +60,19 @@ class BGPDatabaseManager:
         if self.driver:
             self.driver.close()
 
+    def ensure_connection(self):
+        """Ensure that the database connection is active; if not, attempt to reconnect. Returns True if connection is active."""
+        if self.driver is None:
+            logging.info("Driver is None, attempting to reconnect...")
+            self.connect()
+        return self.driver is not None
+
     def store_bgp_update(self, timestamp, collector, peer_asn, prefix, as_path=None, next_hop=None, communities=None, update_type="announcement"):
         """Store BGP update in Neo4j."""
+        if not self.ensure_connection():
+            logging.error("No active database connection available in store_bgp_update")
+            raise Exception("Database connection not available")
+        
         try:
             # Convert collections to strings for Neo4j storage
             if communities:
@@ -108,8 +119,8 @@ class BGPDatabaseManager:
 
     def store_suspicious_update(self, timestamp, prefix, as_path, reasons):
         """Store suspicious BGP updates in Neo4j."""
-        if not self.driver:
-            logging.error("No database connection available")
+        if not self.ensure_connection():
+            logging.error("No active database connection available in store_suspicious_update")
             return
 
         with self.driver.session() as session:
@@ -139,8 +150,8 @@ class BGPDatabaseManager:
 
     def get_prefix_history(self, prefix, limit=10):
         """Retrieve history of updates for a specific prefix."""
-        if not self.driver:
-            logging.error("No database connection available")
+        if not self.ensure_connection():
+            logging.error("No active database connection available in get_prefix_history")
             return []
 
         with self.driver.session() as session:
@@ -154,7 +165,6 @@ class BGPDatabaseManager:
                 """, prefix=prefix, limit=limit)
                 
                 return [dict(record) for record in result]
-            
             except Exception as e:
                 logging.error(f"Error retrieving prefix history from Neo4j: {e}")
                 raise

@@ -63,3 +63,4 @@ System Volume Information/
 *.tmp
 *~
 *.temp
+config/db_config.json

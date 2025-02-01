@@ -17,6 +17,7 @@ import subprocess
 from pathlib import Path
 from utils.config_manager import ConfigManager
 import logging
+import config.database_config as db_config
 
 class BGPMonitorGUI:
     def __init__(self, root):
@@ -71,7 +72,18 @@ class BGPMonitorGUI:
         about_frame.pack(side="bottom", fill="x", padx=5, pady=(0, 5))
         about_button = ttk.Button(about_frame, text="About", command=self.show_about, width=10)
         about_button.pack(side="left", padx=5)
+        
+        # Add Neo4j Connection Status LED
+        self.db_status_led = tk.Label(root, text="DB: Disconnected", bg="red", fg="white", width=15)
+        self.db_status_led.pack(side=tk.BOTTOM, pady=5)
 
+        # Add Connect DB button
+        self.connect_db_button = tk.Button(root, text="Connect DB", command=self.open_db_config_window, width=15)
+        self.connect_db_button.pack(side=tk.BOTTOM, pady=5)
+
+        # Start checking the DB connection status periodically
+        self.check_db_connection()
+        
     def create_control_panel(self):
         """Create the control panel with filters and buttons."""
         control_panel = ttk.LabelFrame(self.main_frame, text="Control Panel", padding="5 5 5 5")
@@ -759,6 +771,84 @@ This application is licensed under CC BY-NC 4.0. Commercial use requires explici
             self.log_message("Error: Invalid message format")
         except Exception as e:
             self.log_message(f"Error processing message: {str(e)}")
+
+    def update_db_status_led(self, connected):
+        if connected:
+            self.db_status_led.config(text="DB: Connected", bg="green")
+        else:
+            self.db_status_led.config(text="DB: Disconnected", bg="red")
+
+    def check_db_connection(self):
+        # Call the DB check function (assumed to return a boolean)
+        try:
+            connected = db_config.check_connection()
+        except Exception as e:
+            connected = False
+        self.update_db_status_led(connected)
+        # Check the connection status every 5 seconds
+        self.root.after(5000, self.check_db_connection)
+
+    def open_db_config_window(self):
+        # Opens a new window to input DB configuration settings
+        self.db_config_win = tk.Toplevel(self.root)
+        self.db_config_win.title("Configure Neo4j Connection")
+
+        # Attempt to load existing config from db_config.json if available
+        import os, json
+        config_path = r'e:\BGP_Monitor\config\db_config.json'
+        existing_config = {}
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, 'r') as f:
+                    existing_config = json.load(f)
+            except Exception as e:
+                print(f"Error loading existing config: {e}")
+
+        tk.Label(self.db_config_win, text="Neo4j URI:").grid(row=0, column=0, padx=5, pady=5, sticky='e')
+        self.uri_entry = tk.Entry(self.db_config_win, width=30)
+        self.uri_entry.grid(row=0, column=1, padx=5, pady=5)
+        self.uri_entry.insert(0, existing_config.get("uri", ""))
+
+        tk.Label(self.db_config_win, text="Username:").grid(row=1, column=0, padx=5, pady=5, sticky='e')
+        self.username_entry = tk.Entry(self.db_config_win, width=30)
+        self.username_entry.grid(row=1, column=1, padx=5, pady=5)
+        self.username_entry.insert(0, existing_config.get("username", ""))
+
+        tk.Label(self.db_config_win, text="Password:").grid(row=2, column=0, padx=5, pady=5, sticky='e')
+        self.password_entry = tk.Entry(self.db_config_win, show='*', width=30)
+        self.password_entry.grid(row=2, column=1, padx=5, pady=5)
+        self.password_entry.insert(0, existing_config.get("password", ""))
+
+        connect_button = tk.Button(self.db_config_win, text="Save and Connect", command=self.save_db_config)
+        connect_button.grid(row=3, column=0, columnspan=2, pady=10)
+
+    def save_db_config(self):
+        # Gather settings from entries
+        uri = self.uri_entry.get()
+        username = self.username_entry.get()
+        password = self.password_entry.get()
+
+        # Build configuration dictionary
+        config_data = {
+            "uri": uri,
+            "username": username,
+            "password": password
+        }
+
+        # Save to config file
+        import json
+        config_path = r'e:\BGP_Monitor\config\db_config.json'
+        try:
+            with open(config_path, 'w') as config_file:
+                json.dump(config_data, config_file, indent=4)
+            # Optionally, inform the db_config module of new settings if needed
+            # Attempt to connect with new settings
+            connected = db_config.check_connection()
+            self.update_db_status_led(connected)
+            self.db_config_win.destroy()
+        except Exception as e:
+            import tkinter.messagebox as mbox
+            mbox.showerror("Error", f"Failed to save configuration: {str(e)}")
 
 def main():
     root = tk.Tk()
