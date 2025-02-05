@@ -11,6 +11,7 @@ import ssl
 import signal
 from utils.db_manager import BGPDatabaseManager
 from config.database_config import NEO4J_CONFIG
+from utils.security_analyzer import check_suspicious_patterns as security_check
 
 # Set up logging with more detailed format
 log_dir = Path("logs")
@@ -162,61 +163,12 @@ class RIPECollector:
                     print(f"New Path: {as_path}")
             
             # 3. Check for suspicious patterns
-            self.check_suspicious_patterns(timestamp, prefix, as_path, peer_asn)
+            alert = security_check(timestamp, prefix, as_path, peer_asn, self.prefix_history, self.db_manager)
+            if alert:
+                self.suspicious_updates.append(alert)
             
         except Exception as e:
             logging.error(f"Error in analyze_update: {e}")
-
-    def check_suspicious_patterns(self, timestamp, prefix, as_path, peer_asn):
-        """Check for potentially suspicious routing patterns."""
-        try:
-            # 1. Multiple AS path changes in short time
-            recent_changes = len([c for c in self.prefix_history.get(prefix, [])
-                               if (timestamp - c['timestamp']).total_seconds() < 300])  # 5 minutes
-            
-            # 2. Unusual AS path length
-            path_length = len(as_path.split(','))
-            
-            # 3. Known transit ASes appearing in unusual positions
-            major_transit_ases = {'174', '3356', '1299', '2914', '3257', '6461', '6762', '7018'}
-            path_ases = set(as_path.split(','))
-            
-            suspicious = False
-            reasons = []
-            
-            if recent_changes > 5:
-                suspicious = True
-                reasons.append(f"Frequent changes ({recent_changes} in 5 minutes)")
-            
-            if path_length > 15:  # Unusually long path
-                suspicious = True
-                reasons.append(f"Unusually long AS path ({path_length} hops)")
-            
-            if suspicious:
-                # Store suspicious update in Neo4j
-                self.db_manager.store_suspicious_update(
-                    timestamp=timestamp,
-                    prefix=prefix,
-                    as_path=as_path,
-                    reasons=reasons
-                )
-                
-                alert = {
-                    'timestamp': timestamp,
-                    'prefix': prefix,
-                    'as_path': as_path,
-                    'reasons': reasons
-                }
-                self.suspicious_updates.append(alert)
-                logging.warning(f"Suspicious Update: {alert}")
-                print(f"\n🚨 Suspicious Update Detected:")
-                print(f"Prefix: {prefix}")
-                print(f"AS Path: {as_path}")
-                for reason in reasons:
-                    print(f"Reason: {reason}")
-                
-        except Exception as e:
-            logging.error(f"Error in check_suspicious_patterns: {e}")
 
     async def process_bgp_message(self, message):
         """Process and format BGP update message."""
