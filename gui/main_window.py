@@ -779,14 +779,26 @@ This application is licensed under CC BY-NC 4.0. Commercial use requires explici
             # Store in database if available
             if self.bgp_monitor and self.bgp_monitor.db_manager:
                 try:
+                    # Extract additional fields for DB storage
+                    origin = data.get("origin")
+                    aggregator = data.get("aggregator")
+                    host = data.get("host") # Collector hostname
+                    msg_id = data.get("id") # Message ID
+
                     self.bgp_monitor.db_manager.store_bgp_update(
                         timestamp=timestamp,
-                        collector=data.get("collector", "unknown"),
+                        collector=data.get("collector", "unknown"), # RRC ID
                         peer_asn=peer_asn,
                         prefix=prefix,
                         as_path=",".join(map(str, path)) if path else None,
-                        communities=communities,
-                        update_type=update_type
+                        communities=communities, # Already extracted
+                        next_hop=data.get("next_hop"), # Assuming next_hop is directly in data
+                        update_type=update_type,
+                        origin=origin,
+                        aggregator=aggregator,
+                        host=host,
+                        id=msg_id,
+                        raw_message=data # Pass the whole data dict as raw
                     )
                     # Update entry count immediately after storing
                     self.update_entries_count()

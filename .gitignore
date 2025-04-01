@@ -34,3 +34,4 @@ collected_data/
 .idea/
 .vscode/
 *.swp
+/data

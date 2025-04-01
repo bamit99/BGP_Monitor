@@ -1,6 +1,7 @@
 from neo4j import GraphDatabase
 from neo4j.exceptions import ClientError
 import logging
+import json # Import the json module
 from datetime import datetime
 
 class BGPDatabaseManager:
@@ -23,11 +24,32 @@ class BGPDatabaseManager:
             logging.error(f"Failed to connect to Neo4j: {e}")
             raise
             
+    def _cleanup_duplicates_tx(self, tx):
+        """Transaction function to clean up duplicate SecurityAlert nodes."""
+        # Find duplicate alert_ids and keep only the node with the minimum internal ID for each
+        # Note: Using deprecated id() function, replace if possible in future Neo4j versions
+        cleanup_query = """
+        MATCH (a:SecurityAlert)
+        WITH a.alert_id AS alertId, collect(id(a)) AS nodeIds, count(a) AS cnt
+        WHERE cnt > 1
+        WITH alertId, nodeIds, min(nodeIds) as minId
+        UNWIND nodeIds AS nodeId
+        MATCH (n) WHERE id(n) = nodeId AND id(n) <> minId
+        DETACH DELETE n
+        """
+        result = tx.run(cleanup_query)
+        summary = result.consume()
+        if summary.counters.nodes_deleted > 0:
+             logging.info(f"Cleaned up {summary.counters.nodes_deleted} duplicate SecurityAlert nodes.")
+        else:
+             logging.info("No duplicate SecurityAlert nodes found to clean up.")
+
+
     def _create_schema_tx(self, tx):
-        """Transaction function to create schema elements."""
-        # Ensure clean state for alert_id uniqueness: drop constraint and any index on the property
-        tx.run("DROP CONSTRAINT ON (a:SecurityAlert) ASSERT a.alert_id IS UNIQUE IF EXISTS")
-        tx.run("DROP INDEX ON :SecurityAlert(alert_id) IF EXISTS")
+        """Transaction function to create schema elements (constraints and indexes)."""
+        # Ensure clean state for alert_id uniqueness: drop constraint by name and any index on the property
+        tx.run("DROP CONSTRAINT security_alert_id_unique IF EXISTS") # Drop by specific name
+        tx.run("DROP INDEX security_alert_id IF EXISTS") # Drop index by specific name
 
         # Now, create the unique constraint for alert_id (implicitly creates an index)
         # Use IF NOT EXISTS for idempotency, even after attempting drops
@@ -45,16 +67,33 @@ class BGPDatabaseManager:
             ON (a.severity)
         """)
 
+    def _drop_schema_tx(self, tx):
+        """Transaction function to drop potentially conflicting schema elements."""
+        # Drop constraint by name and any index on the property
+        tx.run("DROP CONSTRAINT security_alert_id_unique IF EXISTS")
+        tx.run("DROP INDEX security_alert_id IF EXISTS")
+        # Also drop the other indexes in case they need recreation (optional but safer)
+        tx.run("DROP INDEX security_alert_timestamp IF EXISTS")
+        tx.run("DROP INDEX security_alert_severity IF EXISTS")
+
+
     def _init_schema(self):
-        """Initialize database schema with indexes and constraints using a transaction."""
+        """Initialize database schema using separate transactions for cleanup, drop, and create."""
         try:
             with self.driver.session() as session:
+                # 1. Run cleanup in its own transaction first
+                session.write_transaction(self._cleanup_duplicates_tx)
+                # 2. Run drop operations in a separate transaction
+                session.write_transaction(self._drop_schema_tx)
+                # 3. Run create operations in a final transaction
                 session.write_transaction(self._create_schema_tx)
+
             logging.info("Successfully initialized database schema")
         except ClientError as e:
             # Check if it's the specific "IndexAlreadyExists" or "ConstraintAlreadyExists" error
+            # during the CREATE phase (should be less likely now but handle defensively)
             if "already exists" in str(e).lower():
-                logging.info(f"Schema initialization: Index/Constraint likely already exists ({e.code}). Proceeding.")
+                logging.warning(f"Schema initialization: Index/Constraint already exists ({e.code}), likely created concurrently or schema unchanged.")
             else:
                 # Log other ClientErrors as errors
                 logging.error(f"Error initializing database schema (ClientError): {e}")
@@ -68,8 +107,9 @@ class BGPDatabaseManager:
         if self.driver:
             self.driver.close()
     
-    def store_bgp_update(self, timestamp, collector, peer_asn, prefix, as_path=None, 
-                          next_hop=None, communities=None, update_type="announcement"):
+    def store_bgp_update(self, timestamp, collector, peer_asn, prefix, as_path=None,
+                          next_hop=None, communities=None, update_type="announcement",
+                          origin=None, aggregator=None, host=None, id=None, raw_message=None): # Added new params
         """
         Store BGP update in Neo4j database.
         
@@ -82,6 +122,11 @@ class BGPDatabaseManager:
         - next_hop: Next hop IP
         - communities: BGP communities
         - update_type: 'announcement' or 'withdrawal'
+        - origin: Origin attribute
+        - aggregator: Aggregator attribute
+        - host: Collector host name
+        - id: Message ID
+        - raw_message: The raw JSON message as a string
         """
         try:
             with self.driver.session() as session:
@@ -97,7 +142,12 @@ class BGPDatabaseManager:
                         u.as_path = $as_path,
                         u.next_hop = $next_hop,
                         u.communities = $communities,
-                        u.update_type = $update_type
+                        u.update_type = $update_type,
+                        u.origin = $origin,
+                        u.aggregator = $aggregator,
+                        u.host = $host,
+                        u.id = $id,
+                        u.raw = $raw_message
                     WITH u
                     MERGE (p:Prefix {prefix: $prefix})
                     MERGE (u)-[:AFFECTS]->(p)
@@ -110,7 +160,12 @@ class BGPDatabaseManager:
                     as_path=as_path,
                     next_hop=next_hop,
                     communities=str(communities) if communities else None,
-                    update_type=update_type
+                    update_type=update_type,
+                    origin=origin,
+                    aggregator=aggregator,
+                    host=host,
+                    id=id,
+                    raw_message=json.dumps(raw_message) if raw_message else None # Store raw as JSON string
                 )
                 
                 # Process AS path relationships if this is an announcement

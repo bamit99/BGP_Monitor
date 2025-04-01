@@ -21,6 +21,11 @@ import requests
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 import csv
+from utils.bgp_utils import ( # Import AS relationship functions
+    load_as_relationships,
+    get_as_relationship,
+    P2C, P2P, C2P, S2S, UNKNOWN
+)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -137,6 +142,9 @@ def save_security_config():
 
 # Initialize configuration
 load_security_config()
+
+# Load AS relationship data on startup
+load_as_relationships()
 
 def is_critical_prefix(prefix: str) -> bool:
     """Check if prefix is critical for UK infrastructure."""
@@ -288,43 +296,73 @@ def check_possible_hijack(prefix: str, origin_as: Optional[int],
     return len(reasons) > 0, reasons
 
 def check_route_leak(prefix: str, as_path: str, peer_asn: str) -> Tuple[bool, List[str]]:
-    """Check for potential route leaks."""
+    """
+    Check for potential route leaks using valley-free path validation
+    based on loaded AS relationship data.
+    """
     if not as_path:
         return False, []
-    
+
     reasons = []
-    
     try:
-        # Parse AS path
-        asns = [int(asn) for asn in as_path.split(",")]
-        
-        # Check for valley-free routing violations (potential route leaks)
-        # This is a simplified check - in production you'd use a more sophisticated algorithm
-        # and reference a database of AS relationships
-        
-        # Simple check: If a tier-1 provider appears after a non-tier-1
-        # This may indicate improper route propagation
-        tier1_asns = {174, 1299, 2914, 3257, 3356, 3491, 5511, 6453, 6461, 6762, 7018}
-        
+        # Parse AS path into integers
+        asns = [int(asn) for asn in as_path.split(",") if asn.isdigit()]
+        if len(asns) < 2:
+            return False, [] # Need at least two ASNs to check relationships
+
+        in_valley = False # Flag to track if we've gone "down" (p2c or p2p)
+
         for i in range(len(asns) - 1):
-            if asns[i] not in tier1_asns and asns[i+1] in tier1_asns:
-                reasons.append(f"Potential route leak: non-tier1 AS{asns[i]} announces to tier1 AS{asns[i+1]}")
-                
+            asn1 = asns[i]
+            asn2 = asns[i+1]
+
+            # Skip self-loops (prepending)
+            if asn1 == asn2:
+                continue
+
+            relationship = get_as_relationship(asn1, asn2)
+
+            if relationship == UNKNOWN:
+                # Optional: Could flag paths with unknown relationships as suspicious
+                # reasons.append(f"Unknown relationship between AS{asn1} and AS{asn2}")
+                pass # For now, we ignore unknown relationships for leak detection
+
+            elif relationship == P2C or relationship == S2S: # Provider -> Customer or Sibling -> Sibling
+                in_valley = True # We are now in the "valley" or at the same level
+
+            elif relationship == P2P: # Peer -> Peer
+                 in_valley = True # Peers are at the same level
+
+            elif relationship == C2P: # Customer -> Provider
+                if in_valley:
+                    # Violation: Going "up" (c2p) after being in the valley (p2c or p2p)
+                    reasons.append(f"Potential route leak (valley violation): "
+                                   f"AS{asn1} (customer) announced to AS{asn2} (provider) "
+                                   f"after a p2c/p2p/s2s link.")
+                    # Once a leak is detected, no need to check further down this path segment
+                    break
+            # else: UNKNOWN case handled above
+
+        # --- Other existing checks ---
+
         # Check for long AS paths which could indicate a leak
-        if len(asns) > 15:  # Unusually long AS path
+        if len(asns) > 20: # Increased threshold slightly
             reasons.append(f"Suspiciously long AS path ({len(asns)} hops)")
-        
+
         # Check for paths containing private ASNs
         private_asns = []
         for asn in asns:
-            if (asn >= 64512 and asn <= 65534) or (asn >= 4200000000 and asn <= 4294967294):
+            # Standard private ASN ranges
+            if (64512 <= asn <= 65534) or (4200000000 <= asn <= 4294967294):
                 private_asns.append(asn)
-                
+
         if private_asns:
             reasons.append(f"Path contains private ASNs: {private_asns}")
-        
+
         return len(reasons) > 0, reasons
-    except:
+
+    except Exception as e:
+        logger.error(f"Error during route leak check for path '{as_path}': {e}")
         return False, []
 
 @dataclass
