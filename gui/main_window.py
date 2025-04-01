@@ -1,6 +1,6 @@
 """Main GUI window for BGP Monitor."""
 import tkinter as tk
-from tkinter import ttk, scrolledtext, messagebox
+from tkinter import ttk, scrolledtext, messagebox, filedialog
 import asyncio
 import threading
 from datetime import datetime
@@ -18,34 +18,52 @@ from pathlib import Path
 from utils.config_manager import ConfigManager
 import logging
 import config.database_config as db_config
+from utils.security_analyzer import SecurityAlertLogger
+import time
 
 class BGPMonitorGUI:
     def __init__(self, root):
         """Initialize the GUI."""
         self.root = root
         self.root.title("BGP Monitor")
-        self.root.geometry("800x600")
+        self.root.geometry("1000x800")  # Increased width for security panel
         
         # Initialize configuration manager
         self.config_manager = ConfigManager()
         self.settings = self.config_manager.load_settings()
         
+        # Initialize security alert logger
+        self.alert_logger = SecurityAlertLogger()
+        
         # Create main frame
         self.main_frame = ttk.Frame(root)
         self.main_frame.pack(fill="both", expand=True, padx=5, pady=5)
         
-        self.filtered_as_numbers = set()  # Initialize before creating panels
+        # Create left and right frames
+        self.left_frame = ttk.Frame(self.main_frame)
+        self.left_frame.pack(side="left", fill="both", expand=True)
+        
+        self.right_frame = ttk.Frame(self.main_frame)
+        self.right_frame.pack(side="right", fill="both", expand=True, padx=(5,0))
+        
+        self.filtered_as_numbers = set()
         self.data_manager = DataManager("data")
         self.as_lookup = ASLookup()
-        self.filter_var = tk.StringVar(value="")  # Initialize filter variable
+        self.filter_var = tk.StringVar(value="")
         
         # Import collectors configuration
         self.get_collectors_by_region = get_collectors_by_region
         self.get_all_regions = get_all_regions
         self.get_collector_location = get_collector_location
         
-        # Initialize BGP Monitor
-        self.bgp_monitor = BGPMonitor()
+        # Initialize BGP Monitor with database support enabled
+        try:
+            self.bgp_monitor = BGPMonitor(use_db=True)
+            logging.info("BGP Monitor initialized with database support")
+        except Exception as e:
+            logging.warning(f"Failed to initialize BGP Monitor with database: {e}")
+            self.bgp_monitor = BGPMonitor(use_db=False)
+            messagebox.showwarning("Database Connection", "Failed to initialize database connection. Some features may be unavailable.")
         
         # Initialize variables
         self.selected_collectors = set()
@@ -54,44 +72,42 @@ class BGPMonitorGUI:
         self.current_data_file = None
         self.connection_manager = None
         
-        # Create the GUI
+        # Create the GUI components
         self.create_control_panel()
+        self.create_security_panel()
         
         # Set default region if available
         if self.get_all_regions():
             self.region_var.set(self.settings.get("region", self.get_all_regions()[0]))
-            self.update_collectors()  # Will call with None event
+            self.update_collectors()
         
         # Create status bar
         self.status_var = tk.StringVar(value="Ready")
         self.status_bar = ttk.Label(root, textvariable=self.status_var, relief="sunken", padding=(5, 2))
         self.status_bar.pack(side="bottom", fill="x")
         
-        # Create About button at the bottom
-        about_frame = ttk.Frame(root)
-        about_frame.pack(side="bottom", fill="x", padx=5, pady=(0, 5))
-        about_button = ttk.Button(about_frame, text="About", command=self.show_about, width=10)
-        about_button.pack(side="left", padx=5)
-        
         # Add Neo4j Connection Status LED with IP and DB info
         self.db_status_led = tk.Label(root, text="DB: Disconnected", bg="red", fg="white", width=40)
         self.db_status_led.pack(side=tk.BOTTOM, pady=5)
-
+        
         # Add Connect DB button
         self.connect_db_button = tk.Button(root, text="Connect DB", command=self.open_db_config_window, width=15)
         self.connect_db_button.pack(side=tk.BOTTOM, pady=5)
-
+        
         # Add a label to display the count of Update entries
         self.entries_label = tk.Label(root, text="Entry Count: 0", bg="white", fg="black", width=30)
         self.entries_label.pack(side=tk.BOTTOM, pady=5)
-
+        
         # Start initial checks
         self.check_db_connection()
         self.update_entries_count()
         
+        # Load recent alerts
+        self.load_recent_alerts()
+
     def create_control_panel(self):
         """Create the control panel with filters and buttons."""
-        control_panel = ttk.LabelFrame(self.main_frame, text="Control Panel", padding="5 5 5 5")
+        control_panel = ttk.LabelFrame(self.left_frame, text="Control Panel", padding="5 5 5 5")
         control_panel.pack(side="left", fill="both", padx=5, pady=5)
         
         # Create AS Number Filtering frame first
@@ -178,7 +194,7 @@ class BGPMonitorGUI:
         
         # Create Start Monitoring button (initially disabled)
         self.start_button = ttk.Button(control_button_frame, text="Start Monitoring",
-                                     command=self.toggle_monitoring, state="disabled")
+                                     command=self.start_monitoring, state="disabled")
         self.start_button.pack(side="left", padx=5)
         
         # Add a clear log button
@@ -192,7 +208,7 @@ class BGPMonitorGUI:
         self.open_data_button.pack(side="right", padx=5)
         
         # Right panel for log display
-        right_panel = ttk.Frame(self.main_frame)
+        right_panel = ttk.Frame(self.left_frame)
         right_panel.pack(side="left", fill="both", expand=True, padx=5)
         
         # Log display
@@ -202,6 +218,48 @@ class BGPMonitorGUI:
         self.log_text = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, height=20)
         self.log_text.pack(fill="both", expand=True, padx=5, pady=5)
 
+    def create_security_panel(self):
+        """Create the security alerts panel."""
+        # Create security frame
+        security_frame = ttk.LabelFrame(self.right_frame, text="Security Alerts")
+        security_frame.pack(fill="both", expand=True, padx=5, pady=5)
+        
+        # Create alerts treeview
+        columns = ("Time", "Severity", "Type", "Details")
+        self.alerts_tree = ttk.Treeview(security_frame, columns=columns, show="headings")
+        
+        # Configure columns
+        self.alerts_tree.heading("Time", text="Time")
+        self.alerts_tree.heading("Severity", text="Severity")
+        self.alerts_tree.heading("Type", text="Type")
+        self.alerts_tree.heading("Details", text="Details")
+        
+        self.alerts_tree.column("Time", width=100)
+        self.alerts_tree.column("Severity", width=70)
+        self.alerts_tree.column("Type", width=100)
+        self.alerts_tree.column("Details", width=300)
+        
+        # Add scrollbar
+        scrollbar = ttk.Scrollbar(security_frame, orient="vertical", command=self.alerts_tree.yview)
+        self.alerts_tree.configure(yscrollcommand=scrollbar.set)
+        
+        # Create button frame
+        button_frame = ttk.Frame(security_frame)
+        button_frame.pack(side="bottom", fill="x", padx=5, pady=5)
+        
+        # Add export button
+        export_button = ttk.Button(button_frame, text="Export Alerts", command=self.export_alerts)
+        export_button.pack(side="left", padx=5)
+        
+        # Pack widgets
+        self.alerts_tree.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        
+        # Configure tag colors
+        self.alerts_tree.tag_configure("HIGH", foreground="red")
+        self.alerts_tree.tag_configure("MEDIUM", foreground="orange")
+        self.alerts_tree.tag_configure("LOW", foreground="blue")
+        
     def update_collectors(self, event=None):
         """Update the collectors list based on selected region."""
         region = self.region_var.get()
@@ -279,113 +337,88 @@ class BGPMonitorGUI:
         for asn in sorted(self.filtered_as_numbers):
             self.as_listbox.insert(tk.END, f"AS{asn}")
             
-    def toggle_monitoring(self):
-        """Start or stop BGP monitoring."""
-        if not self.is_monitoring:
-            # Start monitoring
-            self.is_monitoring = True
-            self.start_button.config(text="Stop Monitoring")
-            self.update_status("Starting BGP monitoring...")
-            
-            # Create and start monitor thread
-            self.monitor_thread = threading.Thread(target=self._run_monitoring_loop)
-            self.monitor_thread.daemon = True  # Thread will be killed when main thread exits
-            self.monitor_thread.start()
-            
-        else:
-            # Stop monitoring
-            self.stop_monitoring()
-
-    def _run_monitoring_loop(self):
-        """Run the monitoring loop in a separate thread."""
-        try:
-            # Create new event loop for this thread
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            
-            # Run the monitoring
-            loop.run_until_complete(self.start_monitoring())
-            
-        except Exception as e:
-            self.log_message(f"Error in monitoring: {e}")
-        finally:
-            # Schedule stop_monitoring to run in the main thread
-            self.root.after(0, self.stop_monitoring)
-            try:
-                # Cancel all remaining tasks
-                for task in asyncio.all_tasks(loop):
-                    task.cancel()
-                # Run loop one last time to clean up
-                loop.run_until_complete(asyncio.sleep(0))
-            except Exception as e:
-                logging.error(f"Error cleaning up loop: {e}")
-            finally:
-                loop.close()
-
-    async def start_monitoring(self):
+    def start_monitoring(self):
         """Start BGP monitoring."""
-        try:
-            # Get selected collectors
-            selected_indices = self.collector_listbox.curselection()
-            if not selected_indices:
-                self.log_message("Please select at least one collector")
-                return
+        if self.is_monitoring:
+            return
             
-            selected_collectors = [self.collector_listbox.get(i).split()[0] for i in selected_indices]
-            
-            # Initialize connection manager with callback
-            self.connection_manager = ConnectionManager(self.process_update)
-            
-            # Connect to RIPE RIS
-            if not await self.connection_manager.connect():
-                self.log_message("Failed to connect to RIPE RIS")
-                return
-            
-            # Subscribe to selected collectors
-            for collector in selected_collectors:
-                if await self.connection_manager.subscribe(collector):
-                    self.log_message(f" Subscribed to {collector}")
+        self.is_monitoring = True
+        self.monitor_thread = threading.Thread(target=self._monitor_loop)
+        self.monitor_thread.daemon = True
+        self.monitor_thread.start()
+        self.status_var.set("Monitoring started")
+        
+    def _monitor_loop(self):
+        """Main monitoring loop with reconnection logic."""
+        retry_delay = 5  # Initial retry delay in seconds
+        max_retry_delay = 60  # Maximum retry delay
+        
+        while self.is_monitoring:
+            try:
+                # Create new event loop for this thread
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                
+                # Start monitoring
+                self.log_message("Connecting to BGP data feed...")
+                loop.run_until_complete(self._monitor_with_reconnect(loop))
+                
+            except Exception as e:
+                logging.error(f"Error in monitoring loop: {e}")
+                if self.is_monitoring:  # Only if we haven't stopped monitoring
+                    self.log_message(f"Connection error: {e}")
+                    self.log_message(f"Retrying in {retry_delay} seconds...")
+                    time.sleep(retry_delay)
+                    # Exponential backoff with max delay
+                    retry_delay = min(retry_delay * 2, max_retry_delay)
+            finally:
+                try:
+                    loop.close()
+                except:
+                    pass
+                    
+    async def _monitor_with_reconnect(self, loop):
+        """Monitor BGP updates with automatic reconnection."""
+        while self.is_monitoring:
+            try:
+                # Get selected collectors
+                collectors = [item[0] for item in self.collectors_tree.selection()]
+                if not collectors:
+                    self.log_message("No collectors selected")
+                    return
+                    
+                # Start monitoring with keepalive settings
+                await self.bgp_monitor.monitor_updates(
+                    collectors=collectors,
+                    callback=self.process_update,
+                    keepalive_interval=30,  # Send keepalive every 30 seconds
+                    keepalive_timeout=35    # Allow 35 seconds for keepalive response
+                )
+                    
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                if self.is_monitoring:  # Only log if we haven't stopped monitoring
+                    logging.error(f"WebSocket error: {e}")
+                    self.log_message(f"Connection lost: {e}")
+                    self.log_message("Attempting to reconnect...")
+                    await asyncio.sleep(5)  # Wait before reconnecting
                 else:
-                    self.log_message(f" Failed to subscribe to {collector}")
-            
-            # Start listening for updates
-            self.log_message("Listening for BGP updates...")
-            await self.connection_manager.listen()
-            
-        except Exception as e:
-            self.log_message(f"Error in monitoring: {e}")
-            self.stop_monitoring()
-
+                    break
+                    
     def stop_monitoring(self):
         """Stop BGP monitoring."""
-        if self.is_monitoring:
-            self.is_monitoring = False
-            self.start_button.config(text="Start Monitoring")
-            self.update_status("Stopping monitoring...")
+        if not self.is_monitoring:
+            return
             
-            # Stop the connection manager first
-            if self.connection_manager:
-                try:
-                    self.connection_manager.stop()
-                except Exception as e:
-                    logging.error(f"Error stopping connection manager: {e}")
-                finally:
-                    self.connection_manager = None
+        self.is_monitoring = False
+        if self.monitor_thread:
+            self.bgp_monitor.stop_monitoring()
+            self.monitor_thread.join(timeout=5)
+            self.monitor_thread = None
             
-            # Wait for monitor thread to finish
-            if self.monitor_thread and self.monitor_thread.is_alive():
-                try:
-                    self.monitor_thread.join(timeout=2.0)  # Wait up to 2 seconds
-                    if self.monitor_thread.is_alive():
-                        logging.warning("Monitor thread did not stop cleanly")
-                except Exception as e:
-                    logging.error(f"Error joining monitor thread: {e}")
-                finally:
-                    self.monitor_thread = None
-            
-            self.update_status("Monitoring stopped")
-            self.log_message("✓ Monitoring stopped")
-
+        self.status_var.set("Monitoring stopped")
+        
     def log_message(self, message):
         """Add message to log in a thread-safe way."""
         if not isinstance(message, str):
@@ -658,140 +691,143 @@ This application is licensed under CC BY-NC 4.0. Commercial use requires explici
     async def process_update(self, message):
         """Process BGP update message."""
         try:
-            # Parse message if it's a string, otherwise use as is
-            if isinstance(message, str):
-                data = json.loads(message)
-            else:
-                data = message
-
-            if 'type' in data and data['type'] == 'ris_message':
-                update = data['data']
+            if not message or not isinstance(message, dict):
+                return
+            
+            data = message.get("data", {})
+            if not data:
+                return
                 
-                # Get list of AS numbers from the listbox
-                as_filters = set()
-                for i in range(self.as_listbox.size()):
-                    as_text = self.as_listbox.get(i)
-                    match = re.match(r'AS(\d+)', as_text)
-                    if match:
-                        as_filters.add(match.group(1))
-                
-                # If there are AS filters, check if the update matches any
-                if as_filters:
-                    # Extract AS path from the update
-                    as_path = []
-                    if 'path' in update:
-                        as_path = [str(asn) for asn in update['path']]
+            # Get list of AS numbers from the listbox for filtering
+            as_filters = set()
+            for i in range(self.as_listbox.size()):
+                as_text = self.as_listbox.get(i)
+                match = re.match(r'AS(\d+)', as_text)
+                if match:
+                    as_filters.add(match.group(1))
                     
-                    # Skip if none of the filtered AS numbers are in the path
-                    if not any(asn in as_path for asn in as_filters):
-                        return
+            # Extract message components
+            timestamp = datetime.fromtimestamp(data.get("timestamp", 0))
+            peer = data.get("peer", "")
+            peer_asn = data.get("peer_asn", "")
+            path = data.get("path", [])
+            communities = data.get("communities", [])
+            
+            # Convert path to strings for comparison
+            path_str = [str(asn) for asn in path]
+            
+            # If there are AS filters, check if any filtered AS is in the path
+            if as_filters and not any(str(asn) in path_str for asn in as_filters):
+                return  # Skip if no filtered AS in path
                 
-                # Format timestamp
-                timestamp = datetime.fromtimestamp(update.get('timestamp', 0))
-                collector = update.get('host', 'unknown')
-                peer_asn = update.get('peer_asn', '')
+            # Get prefix from either withdrawals or announcements
+            prefix = None
+            update_type = None
+            if "withdrawals" in data and data["withdrawals"]:
+                prefix = data["withdrawals"][0]
+                update_type = "withdrawal"
+            elif "announcements" in data:
+                for announcement in data["announcements"]:
+                    if "prefixes" in announcement and announcement["prefixes"]:
+                        prefix = announcement["prefixes"][0]
+                        update_type = "announcement"
+                        break
+            
+            if not prefix:
+                return
                 
-                # Process announcements
-                if update.get('announcements'):
-                    # Get AS path and communities
-                    as_path = update.get('path', [])  # Keep as list, db_manager will handle conversion
-                    communities = update.get('community', [])  # Keep as list, db_manager will handle conversion
+            # Format message for display
+            message = f"Type: {update_type.capitalize()}, Prefix: {prefix}, Peer: {peer} (AS{peer_asn}), Path: {' > '.join(map(str, path))}"
+            if communities:
+                message += f", Communities: {communities}"
+            
+            # Add to log
+            self.log_message(message)
+            
+            # Store in database if available
+            if self.bgp_monitor and self.bgp_monitor.db_manager:
+                try:
+                    self.bgp_monitor.db_manager.store_bgp_update(
+                        timestamp=timestamp,
+                        collector=data.get("collector", "unknown"),
+                        peer_asn=peer_asn,
+                        prefix=prefix,
+                        as_path=",".join(map(str, path)) if path else None,
+                        communities=communities,
+                        update_type=update_type
+                    )
+                    # Update entry count immediately after storing
+                    self.update_entries_count()
                     
-                    for announcement in update['announcements']:
-                        next_hop = announcement.get('next_hop', '')
-                        prefixes = announcement.get('prefixes', [])
-                        if not prefixes:
-                            prefix = announcement.get('prefix')
-                            if prefix:
-                                prefixes = [prefix]
+                    # Check for security issues
+                    from utils.security_analyzer import check_suspicious_patterns
+                    alert = check_suspicious_patterns(
+                        timestamp=timestamp,
+                        prefix=prefix,
+                        as_path=",".join(map(str, path)) if path else None,
+                        peer_asn=peer_asn,
+                        prefix_history=self.bgp_monitor.db_manager.get_prefix_history(prefix),
+                        db_manager=self.bgp_monitor.db_manager
+                    )
+                    
+                    # Add alert to security panel if suspicious
+                    if alert:
+                        self.add_security_alert(alert)
                         
-                        for prefix in prefixes:
-                            if not prefix:
-                                continue
-                            
-                            # Store in Neo4j
-                            try:
-                                self.bgp_monitor.db_manager.store_bgp_update(
-                                    timestamp=timestamp,
-                                    collector=collector,
-                                    peer_asn=peer_asn,
-                                    prefix=prefix,
-                                    as_path=as_path,
-                                    next_hop=next_hop,
-                                    communities=communities,
-                                    update_type="announcement"
-                                )
-                            except Exception as e:
-                                self.log_message(f"Error storing announcement: {e}")
-                
-                # Process withdrawals
-                if update.get('withdrawals'):
-                    for prefix in update['withdrawals']:
-                        try:
-                            # Store withdrawal in Neo4j
-                            self.bgp_monitor.db_manager.store_bgp_update(
-                                timestamp=timestamp,
-                                collector=collector,
-                                peer_asn=peer_asn,
-                                prefix=prefix,
-                                update_type="withdrawal"
-                            )
-                        except Exception as e:
-                            self.log_message(f"Error storing withdrawal: {e}")
-                
-                # Create log message for display
-                formatted_time = timestamp.strftime('%Y-%m-%d %H:%M:%S')
-                peer = f"{update.get('peer', 'N/A')} (AS{peer_asn})"
-                path = ' > '.join(str(asn) for asn in update.get('path', []))
-                
-                # Get prefixes for display
-                prefixes = []
-                if update.get('announcements'):
-                    for announcement in update['announcements']:
-                        if announcement.get('prefixes'):
-                            prefixes.extend(announcement['prefixes'])
-                        elif announcement.get('prefix'):
-                            prefixes.append(announcement['prefix'])
-                
-                log_msg = (
-                    f"{formatted_time} - "
-                    f"Type: {'Announcement' if update.get('announcements') else 'Withdrawal'}, "
-                    f"Prefix: {', '.join(prefixes) if prefixes else 'N/A'}, "
-                    f"Peer: {peer}, "
-                    f"Path: {path}"
-                )
-                
-                # Add withdrawals to log message if any
-                if update.get('withdrawals'):
-                    withdrawals = ', '.join(update['withdrawals'])
-                    log_msg += f"\nWithdrawals: {withdrawals}"
-                
-                self.log_message(log_msg)
-                
-                # Save to file if data manager is initialized
-                if self.data_manager:
-                    self.data_manager.save_update(update)
-                    
-        except json.JSONDecodeError:
-            self.log_message("Error: Invalid message format")
+                except Exception as e:
+                    logging.error(f"Failed to store update in database: {e}")
+            
         except Exception as e:
-            self.log_message(f"Error processing message: {str(e)}")
+            logging.error(f"Error processing update: {e}")
 
-    def update_db_status_led(self, connected):
-        """Update the connection status LED with connection info."""
-        from config.database_config import NEO4J_CONFIG
-        uri = NEO4J_CONFIG.get("uri", "")
-        ip = uri.split("://")[-1].split(":")[0] if uri else "N/A"
-        db_name = "neo4j"  # Default Neo4j database name
+    def update_db_status_led(self, connected, status_text=None):
+        """Update the database status LED and text."""
+        if status_text is None:
+            status_text = "DB: Connected" if connected else "DB: Disconnected"
+            
+        self.db_status_led.config(
+            text=status_text,
+            bg="green" if connected else "red",
+            fg="white"
+        )
+        
+        # Enable/disable DB-dependent features
+        if hasattr(self, 'connect_db_button'):
+            self.connect_db_button.config(
+                text="Disconnect DB" if connected else "Connect DB"
+            )
 
-        if connected:
-            self.db_status_led.config(text=f"DB: Connected - {ip} ({db_name})", bg="green")
-        else:
-            self.db_status_led.config(text="DB: Disconnected", bg="red")
+    def check_db_connection(self):
+        """Check database connection status and update UI accordingly."""
+        try:
+            # First check if BGP Monitor has database support
+            if not hasattr(self.bgp_monitor, 'db_manager') or self.bgp_monitor.db_manager is None:
+                connected = False
+                status_text = "DB: Disabled"
+            else:
+                # Then check actual connection
+                connected = db_config.check_connection()
+                status_text = f"DB: Connected to {db_config.NEO4J_CONFIG['uri']}" if connected else "DB: Connection Failed"
+                
+        except Exception as e:
+            connected = False
+            status_text = f"DB: Error ({str(e)})"
+            logging.error(f"Database connection check failed: {e}")
+            
+        # Update UI
+        self.update_db_status_led(connected, status_text)
+        
+        # Schedule next check
+        self.root.after(5000, self.check_db_connection)
 
     def update_entries_count(self):
-        """Query the database for the count of 'Update' nodes and update the label."""
+        """Query the database for the count of 'BGPUpdate' nodes and update the label."""
         try:
+            # First check if db_manager is available
+            if not self.bgp_monitor.db_manager:
+                self.entries_label.config(text="Entry Count: N/A (No DB)")
+                return
+                
             from config.database_config import NEO4J_CONFIG
             from neo4j import GraphDatabase
             uri = NEO4J_CONFIG.get("uri")
@@ -802,7 +838,7 @@ This application is licensed under CC BY-NC 4.0. Commercial use requires explici
                 return
             driver = GraphDatabase.driver(uri, auth=(username, password))
             with driver.session() as session:
-                result = session.run("MATCH (u:Update) RETURN count(u) AS count")
+                result = session.run("MATCH (u:BGPUpdate) RETURN count(u) AS count")
                 record = result.single()
                 count = record.get("count") if record else 0
             driver.close()
@@ -811,59 +847,57 @@ This application is licensed under CC BY-NC 4.0. Commercial use requires explici
             self.entries_label.config(text="Entry Count: Error")
             print(f"Error updating entry count: {e}")
         finally:
-            # Schedule next update in 60 seconds (60000 milliseconds)
-            self.root.after(60000, self.update_entries_count)
-
-    def check_db_connection(self):
-        # Call the DB check function (assumed to return a boolean)
-        try:
-            connected = db_config.check_connection()
-        except Exception as e:
-            connected = False
-        self.update_db_status_led(connected)
-        # Check the connection status every 5 seconds
-        self.root.after(5000, self.check_db_connection)
+            # Schedule next update in 5 seconds (5000 milliseconds)
+            self.root.after(5000, self.update_entries_count)
 
     def open_db_config_window(self):
-        # Opens a new window to input DB configuration settings
+        """Handle database connection/disconnection."""
+        # If already connected, disconnect
+        if self.connect_db_button.cget('text') == "Disconnect DB":
+            # Reinitialize BGP Monitor without database
+            self.bgp_monitor = BGPMonitor(use_db=False)
+            logging.info("Disconnected from database")
+            self.update_db_status_led(False, "DB: Disconnected")
+            return
+
+        # If not connected, show configuration window
         self.db_config_win = tk.Toplevel(self.root)
         self.db_config_win.title("Configure Neo4j Connection")
+        self.db_config_win.geometry("400x200")
+        
+        # Get current config
+        current_config = db_config.NEO4J_CONFIG
+        
+        # Create and pack widgets with current values
+        ttk.Label(self.db_config_win, text="Neo4j URI:").pack(pady=5)
+        uri_entry = ttk.Entry(self.db_config_win, width=40)
+        uri_entry.insert(0, current_config.get('uri', ''))
+        uri_entry.pack(pady=5)
+        
+        ttk.Label(self.db_config_win, text="Username:").pack(pady=5)
+        username_entry = ttk.Entry(self.db_config_win, width=40)
+        username_entry.insert(0, current_config.get('username', ''))
+        username_entry.pack(pady=5)
+        
+        ttk.Label(self.db_config_win, text="Password:").pack(pady=5)
+        password_entry = ttk.Entry(self.db_config_win, width=40, show="*")
+        password_entry.insert(0, current_config.get('password', ''))
+        password_entry.pack(pady=5)
+        
+        # Save button
+        save_button = ttk.Button(
+            self.db_config_win,
+            text="Save and Connect",
+            command=lambda: self.save_db_config(
+                uri_entry.get(),
+                username_entry.get(),
+                password_entry.get()
+            )
+        )
+        save_button.pack(pady=20)
 
-        # Attempt to load existing config from db_config.json if available
-        import os, json
-        config_path = r'e:\BGP_Monitor\config\db_config.json'
-        existing_config = {}
-        if os.path.exists(config_path):
-            try:
-                with open(config_path, 'r') as f:
-                    existing_config = json.load(f)
-            except Exception as e:
-                print(f"Error loading existing config: {e}")
-
-        tk.Label(self.db_config_win, text="Neo4j URI:").grid(row=0, column=0, padx=5, pady=5, sticky='e')
-        self.uri_entry = tk.Entry(self.db_config_win, width=30)
-        self.uri_entry.grid(row=0, column=1, padx=5, pady=5)
-        self.uri_entry.insert(0, existing_config.get("uri", ""))
-
-        tk.Label(self.db_config_win, text="Username:").grid(row=1, column=0, padx=5, pady=5, sticky='e')
-        self.username_entry = tk.Entry(self.db_config_win, width=30)
-        self.username_entry.grid(row=1, column=1, padx=5, pady=5)
-        self.username_entry.insert(0, existing_config.get("username", ""))
-
-        tk.Label(self.db_config_win, text="Password:").grid(row=2, column=0, padx=5, pady=5, sticky='e')
-        self.password_entry = tk.Entry(self.db_config_win, show='*', width=30)
-        self.password_entry.grid(row=2, column=1, padx=5, pady=5)
-        self.password_entry.insert(0, existing_config.get("password", ""))
-
-        connect_button = tk.Button(self.db_config_win, text="Save and Connect", command=self.save_db_config)
-        connect_button.grid(row=3, column=0, columnspan=2, pady=10)
-
-    def save_db_config(self):
-        # Gather settings from entries
-        uri = self.uri_entry.get()
-        username = self.username_entry.get()
-        password = self.password_entry.get()
-
+    def save_db_config(self, uri, username, password):
+        """Save database configuration."""
         # Build configuration dictionary
         config_data = {
             "uri": uri,
@@ -871,20 +905,103 @@ This application is licensed under CC BY-NC 4.0. Commercial use requires explici
             "password": password
         }
 
-        # Save to config file
-        import json
-        config_path = r'e:\BGP_Monitor\config\db_config.json'
         try:
-            with open(config_path, 'w') as config_file:
-                json.dump(config_data, config_file, indent=4)
-            # Optionally, inform the db_config module of new settings if needed
-            # Attempt to connect with new settings
-            connected = db_config.check_connection()
-            self.update_db_status_led(connected)
-            self.db_config_win.destroy()
+            # Update Neo4j configuration using the config manager
+            if db_config.update_neo4j_config(uri=uri, username=username, password=password):
+                # Try to connect with new settings
+                connected = db_config.check_connection()
+                self.update_db_status_led(connected)
+                
+                if connected:
+                    # Stop the current BGP Monitor if it's running
+                    if self.is_monitoring:
+                        self.stop_monitoring()
+                    
+                    # Clean up old BGP Monitor
+                    if hasattr(self, 'bgp_monitor'):
+                        # Stop any active connections
+                        if hasattr(self.bgp_monitor, 'connection_manager') and self.bgp_monitor.connection_manager:
+                            self.bgp_monitor.connection_manager.stop()
+                    
+                    # Reinitialize BGP Monitor with database support
+                    self.bgp_monitor = BGPMonitor(use_db=True)
+                    logging.info("Reinitialized BGP Monitor with new database configuration")
+                
+                self.db_config_win.destroy()
+            else:
+                raise Exception("Failed to update configuration")
+                
         except Exception as e:
-            import tkinter.messagebox as mbox
-            mbox.showerror("Error", f"Failed to save configuration: {str(e)}")
+            messagebox.showerror("Error", f"Failed to save configuration: {str(e)}")
+
+    def add_security_alert(self, alert):
+        """Add a security alert to the alerts panel and database."""
+        if not alert:
+            return
+            
+        # Log alert to both CSV and database
+        self.alert_logger.log_alert(alert, self.bgp_monitor.db_manager if self.bgp_monitor else None)
+            
+        timestamp = alert.get("timestamp", datetime.now()).strftime("%H:%M:%S")
+        severity = alert.get("severity", "LOW")
+        
+        # Determine alert type
+        alert_type = "Unknown"
+        if "RPKI Invalid" in str(alert.get("reasons", [])):
+            alert_type = "RPKI Invalid"
+        elif "hijack" in str(alert.get("reasons", [])).lower():
+            alert_type = "Possible Hijack"
+        elif "leak" in str(alert.get("reasons", [])).lower():
+            alert_type = "Route Leak"
+        elif "prepending" in str(alert.get("reasons", [])).lower():
+            alert_type = "Path Manipulation"
+        
+        # Format details
+        details = "; ".join(alert.get("reasons", []))
+        if len(details) > 100:
+            details = details[:97] + "..."
+        
+        # Insert at top of tree with appropriate tag
+        self.alerts_tree.insert("", 0, values=(timestamp, severity, alert_type, details), tags=(severity,))
+        
+        # Keep only last 100 alerts in tree
+        if len(self.alerts_tree.get_children()) > 100:
+            self.alerts_tree.delete(self.alerts_tree.get_children()[-1])
+
+    def load_recent_alerts(self):
+        """Load recent alerts from database into the alerts panel."""
+        if not self.bgp_monitor or not self.bgp_monitor.db_manager:
+            return
+            
+        alerts = self.bgp_monitor.db_manager.get_recent_alerts()
+        for alert in alerts:
+            self.add_security_alert(alert)
+
+    def export_alerts(self):
+        """Export security alerts to CSV file."""
+        if not self.bgp_monitor or not self.bgp_monitor.db_manager:
+            messagebox.showerror("Error", "Database connection required to export alerts")
+            return
+            
+        try:
+            # Get file path from user
+            filepath = filedialog.asksaveasfilename(
+                defaultextension=".csv",
+                filetypes=[("CSV files", "*.csv")],
+                title="Export Security Alerts"
+            )
+            
+            if not filepath:  # User cancelled
+                return
+                
+            # Export alerts
+            if self.bgp_monitor.db_manager.export_alerts_to_csv(filepath):
+                messagebox.showinfo("Success", f"Alerts exported to {filepath}")
+            else:
+                messagebox.showerror("Error", "Failed to export alerts")
+                
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to export alerts: {str(e)}")
 
 def main():
     root = tk.Tk()

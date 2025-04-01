@@ -1,0 +1,21 @@
+{
+  "8220": {
+    "asn": "8220",
+    "name": "COLT - COLT Technology Services Group Limited",
+    "description": "COLT Technology Services Group Limited",
+    "website": "https://www.colt.net",
+    "country": "",
+    "city": "",
+    "state": "",
+    "traffic_levels": "1-5Tbps",
+    "policy_general": "Selective",
+    "policy_locations": "Required - International",
+    "policy_ratio": false,
+    "info_scope": "Global",
+    "info_type": "NSP",
+    "source": "Multiple Sources",
+    "timestamp": 1743418549.421212,
+    "handle": "AS8220",
+    "address": ""
+  }
+}

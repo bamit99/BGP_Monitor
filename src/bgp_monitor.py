@@ -1,6 +1,8 @@
 """Main BGP monitoring application."""
 import asyncio
 import logging
+import json
+import time
 from datetime import datetime
 from typing import Set, Dict, Any
 
@@ -8,73 +10,119 @@ from utils.bgp_utils import validate_as_number, parse_as_path
 from config.collectors import get_collectors_by_region, get_collector_location
 from utils.db_manager import BGPDatabaseManager
 from config.database_config import NEO4J_CONFIG
+import websockets
 
 class BGPMonitor:
-    def __init__(self):
-        self.collectors: Dict[str, str] = {}
-        self.active_collectors: Set[str] = set()
-        self.filtered_as_numbers: Set[int] = set()
-        self.running: bool = True
+    """BGP Monitor class for handling BGP update streams."""
+    
+    def __init__(self, use_db=False):
+        """Initialize BGP Monitor."""
+        self.websocket = None
+        self.is_monitoring = False
+        self.db_manager = None
+        self._last_keepalive = None
+        self._keepalive_interval = None
+        self._keepalive_timeout = None
         
-        # Initialize Neo4j database manager
-        self.db_manager = BGPDatabaseManager(
-            uri=NEO4J_CONFIG['uri'],
-            username=NEO4J_CONFIG['username'],
-            password=NEO4J_CONFIG['password']
-        )
+        if use_db:
+            try:
+                uri = NEO4J_CONFIG['uri']
+                username = NEO4J_CONFIG['username']
+                password = NEO4J_CONFIG['password']
+                self.db_manager = BGPDatabaseManager(uri, username, password)
+            except Exception as e:
+                logging.error(f"Failed to initialize database: {e}")
+                
+    async def monitor_updates(self, collectors, callback, keepalive_interval=30, keepalive_timeout=35):
+        """
+        Monitor BGP updates from specified collectors.
         
-        # Configure logging
-        logging.basicConfig(
-            filename='bgp_monitor.log',
-            level=logging.INFO,
-            format='%(asctime)s - %(levelname)s - %(message)s'
-        )
+        Args:
+            collectors: List of collector IDs
+            callback: Function to call with updates
+            keepalive_interval: Seconds between keepalive pings
+            keepalive_timeout: Seconds to wait for keepalive response
+        """
+        self.is_monitoring = True
+        self._keepalive_interval = keepalive_interval
+        self._keepalive_timeout = keepalive_timeout
         
-    def add_collector(self, collector_id: str) -> bool:
-        """Add a collector to the active set."""
-        location = get_collector_location(collector_id)
-        if location:
-            self.collectors[collector_id] = location
-            self.active_collectors.add(collector_id)
-            logging.info(f"Added collector: {collector_id} ({location})")
-            return True
-        return False
-        
-    def remove_collector(self, collector_id: str) -> bool:
-        """Remove a collector from the active set."""
-        if collector_id in self.active_collectors:
-            self.active_collectors.remove(collector_id)
-            logging.info(f"Removed collector: {collector_id}")
-            return True
-        return False
-        
-    def add_as_filter(self, as_number: int) -> bool:
-        """Add AS number to filter set."""
-        if validate_as_number(as_number):
-            self.filtered_as_numbers.add(as_number)
-            logging.info(f"Added AS filter: {as_number}")
-            return True
-        return False
-        
-    def remove_as_filter(self, as_number: int) -> bool:
-        """Remove AS number from filter set."""
-        if as_number in self.filtered_as_numbers:
-            self.filtered_as_numbers.remove(as_number)
-            logging.info(f"Removed AS filter: {as_number}")
-            return True
-        return False
-        
-    def should_process_update(self, update: Dict[str, Any]) -> bool:
-        """Check if update should be processed based on filters."""
-        if not self.filtered_as_numbers:
-            return True
+        try:
+            # Connect to WebSocket
+            uri = "wss://ris-live.ripe.net/v1/ws/"
+            async with websockets.connect(uri) as websocket:
+                self.websocket = websocket
+                
+                # Subscribe to collectors
+                for collector in collectors:
+                    await self._subscribe(collector)
+                
+                # Start keepalive task
+                keepalive_task = asyncio.create_task(self._keepalive_loop())
+                
+                # Main message loop
+                while self.is_monitoring:
+                    try:
+                        message = await asyncio.wait_for(
+                            websocket.recv(),
+                            timeout=self._keepalive_timeout
+                        )
+                        self._last_keepalive = time.time()
+                        
+                        # Process message
+                        data = json.loads(message)
+                        if callback:
+                            callback(data)
+                            
+                    except asyncio.TimeoutError:
+                        if time.time() - self._last_keepalive > self._keepalive_timeout:
+                            raise ConnectionError("Keepalive timeout")
+                            
+                # Clean up
+                keepalive_task.cancel()
+                try:
+                    await keepalive_task
+                except asyncio.CancelledError:
+                    pass
+                    
+        except Exception as e:
+            logging.error(f"WebSocket error: {e}")
+            raise
+        finally:
+            self.websocket = None
             
-        as_path = update.get('as_path', '')
-        if not as_path:
+    async def _keepalive_loop(self):
+        """Send periodic keepalive pings."""
+        try:
+            while self.is_monitoring and self.websocket:
+                await asyncio.sleep(self._keepalive_interval)
+                if self.websocket and self.websocket.open:
+                    await self.websocket.ping()
+                    self._last_keepalive = time.time()
+        except Exception as e:
+            logging.error(f"Keepalive error: {e}")
+            
+    async def _subscribe(self, collector):
+        """Subscribe to a collector."""
+        if not self.websocket:
             return False
             
-        path_asns = set(parse_as_path(as_path))
-        return bool(path_asns & self.filtered_as_numbers)
+        try:
+            subscribe_message = {
+                "type": "ris_subscribe",
+                "data": {
+                    "host": collector
+                }
+            }
+            await self.websocket.send(json.dumps(subscribe_message))
+            return True
+        except Exception as e:
+            logging.error(f"Subscribe error for {collector}: {e}")
+            return False
+            
+    def stop_monitoring(self):
+        """Stop monitoring BGP updates."""
+        self.is_monitoring = False
         
     async def process_bgp_message(self, message: Dict[str, Any]) -> Dict[str, Any]:
         """Process BGP update message."""
@@ -106,7 +154,7 @@ class BGPMonitor:
                 update_info["type"] = "withdrawal"
                 update_info["prefix"] = withdrawals[0]
                 
-            return update_info if self.should_process_update(update_info) else None
+            return update_info
             
         except Exception as e:
             logging.error(f"Error processing BGP message: {e}")
@@ -144,17 +192,18 @@ class BGPMonitor:
                         if not prefix:
                             continue
                             
-                        # Store in Neo4j
-                        self.db_manager.store_bgp_update(
-                            timestamp=timestamp,
-                            collector=collector,
-                            peer_asn=peer_asn,
-                            prefix=prefix,
-                            as_path=as_path,
-                            next_hop=next_hop,
-                            communities=communities,
-                            update_type="announcement"
-                        )
+                        # Store in Neo4j if available
+                        if self.db_manager:
+                            self.db_manager.store_bgp_update(
+                                timestamp=timestamp,
+                                collector=collector,
+                                peer_asn=peer_asn,
+                                prefix=prefix,
+                                as_path=as_path,
+                                next_hop=next_hop,
+                                communities=communities,
+                                update_type="announcement"
+                            )
                         
                         # Log the update
                         logging.info(f"Announcement - Prefix: {prefix}, AS Path: {as_path}")
@@ -163,14 +212,15 @@ class BGPMonitor:
             withdrawals = data.get("withdrawals", [])
             if withdrawals:
                 for prefix in withdrawals:
-                    # Store withdrawal in Neo4j
-                    self.db_manager.store_bgp_update(
-                        timestamp=timestamp,
-                        collector=collector,
-                        peer_asn=peer_asn,
-                        prefix=prefix,
-                        update_type="withdrawal"
-                    )
+                    # Store withdrawal in Neo4j if available
+                    if self.db_manager:
+                        self.db_manager.store_bgp_update(
+                            timestamp=timestamp,
+                            collector=collector,
+                            peer_asn=peer_asn,
+                            prefix=prefix,
+                            update_type="withdrawal"
+                        )
                     
                     # Log the withdrawal
                     logging.info(f"Withdrawal - Prefix: {prefix}")
@@ -185,5 +235,5 @@ class BGPMonitor:
         
     def stop(self):
         """Stop the monitor."""
-        self.running = False
+        self.stop_monitoring()
         logging.info("BGP Monitor stopped")

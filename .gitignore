@@ -1,66 +1,36 @@
-# Python
+# Python bytecode
 __pycache__/
 *.py[cod]
 *$py.class
-*.so
-.Python
-build/
-develop-eggs/
+
+# Distribution / packaging
 dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
+build/
 *.egg-info/
-.installed.cfg
-*.egg
 
-# BGP Monitor specific
-data/
-data/*.csv
-data/*_report.html
-data/*_updates.png
-data/*_paths.png
-data/*_graph.html
-cache/
-cache/*.json
-logs/
-*.log
-config/user_settings.json
-
-# Virtual Environment
+# Virtual environments
 venv/
 env/
 ENV/
-.env
-.venv
 
-# IDE
+# Logs
+logs/
+*.log
+
+# Databases
+*.db
+*.sqlite3
+
+# Configuration files with sensitive data
+config/database_config.ini
+
+# Collected data
+collected_data/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IDE files
 .idea/
 .vscode/
 *.swp
-*.swo
-*.swn
-.project
-.pydevproject
-.settings/
-
-# OS
-.DS_Store
-Thumbs.db
-*.db
-desktop.ini
-$RECYCLE.BIN/
-System Volume Information/
-
-# Temp files
-*.bak
-*.tmp
-*~
-*.temp
-config/db_config.json
