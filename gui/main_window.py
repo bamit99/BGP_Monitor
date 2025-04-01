@@ -171,8 +171,10 @@ class BGPMonitorGUI:
         self.update_collectors(None)  # Update list for current region
         saved_collectors = self.settings.get("collectors", [])
         if saved_collectors:
-            for i, item in enumerate(self.collector_listbox.get(0, tk.END)):
-                if item in saved_collectors:
+            # Compare only the ID part when loading saved collectors
+            for i, item_text in enumerate(self.collector_listbox.get(0, tk.END)):
+                item_id = item_text.split(" ")[0] # Extract ID
+                if item_id in saved_collectors:
                     self.collector_listbox.selection_set(i)
                     
         # Update start button state after loading saved selections
@@ -347,8 +349,8 @@ class BGPMonitorGUI:
         self.monitor_thread = threading.Thread(target=self._monitor_loop)
         self.monitor_thread.daemon = True
         self.monitor_thread.start()
-        self.status_var.set("Monitoring started")
-        
+        # Schedule UI update on main thread
+        self.root.after(0, self.update_ui_for_monitoring_start)
     def _monitor_loop(self):
         """Main monitoring loop with reconnection logic."""
         retry_delay = 5  # Initial retry delay in seconds
@@ -373,17 +375,23 @@ class BGPMonitorGUI:
                     # Exponential backoff with max delay
                     retry_delay = min(retry_delay * 2, max_retry_delay)
             finally:
+                # If loop exited unexpectedly while still supposed to be monitoring
+                if self.is_monitoring:
+                    self.is_monitoring = False # Mark as stopped
+                    # Schedule UI reset on main thread
+                    self.root.after(0, self.update_ui_for_monitoring_stop)
                 try:
                     loop.close()
                 except:
                     pass
-                    
     async def _monitor_with_reconnect(self, loop):
         """Monitor BGP updates with automatic reconnection."""
         while self.is_monitoring:
             try:
                 # Get selected collectors
-                collectors = [self.collector_listbox.get(idx) for idx in self.collector_listbox.curselection()]
+                # Extract only the collector ID from the selected display text
+                selected_indices = self.collector_listbox.curselection()
+                collectors = [self.collector_listbox.get(idx).split(" ")[0] for idx in selected_indices]
                 if not collectors:
                     self.log_message("No collectors selected")
                     return
@@ -415,17 +423,32 @@ class BGPMonitorGUI:
         self.is_monitoring = False
         if self.monitor_thread:
             self.bgp_monitor.stop_monitoring()
+            # Ensure the monitor loop knows to stop
+            self.bgp_monitor.stop_monitoring()
             self.monitor_thread.join(timeout=5)
             self.monitor_thread = None
-            
-        self.status_var.set("Monitoring stopped")
-        
+
+        # Schedule UI update on main thread
+        self.root.after(0, self.update_ui_for_monitoring_stop)
     def log_message(self, message):
         """Add message to log in a thread-safe way."""
         if not isinstance(message, str):
             message = str(message)
         self.log_text.insert(tk.END, message + "\n")
         self.log_text.see(tk.END)
+
+    # New methods for thread-safe UI updates
+    def update_ui_for_monitoring_start(self):
+        """Update UI elements when monitoring starts."""
+        self.start_button.configure(text="Stop Monitoring", command=self.stop_monitoring, state="normal")
+        self.status_var.set("Monitoring...")
+
+    def update_ui_for_monitoring_stop(self):
+        """Update UI elements when monitoring stops."""
+        self.start_button.configure(text="Start Monitoring", command=self.start_monitoring)
+        self.status_var.set("Monitoring stopped")
+        # Re-evaluate button state based on collector selection
+        self.update_start_button_state()
 
     def update_status(self, message):
         """Update status label in a thread-safe way."""
@@ -461,7 +484,8 @@ class BGPMonitorGUI:
         # Save collectors if listbox exists and has selections
         if hasattr(self, 'collector_listbox'):
             selected = self.collector_listbox.curselection()
-            current_settings["collectors"] = [self.collector_listbox.get(i) for i in selected] if selected else []
+            # Extract only the collector ID when saving settings
+            current_settings["collectors"] = [self.collector_listbox.get(i).split(" ")[0] for i in selected] if selected else []
             
         # Save AS filters if listbox exists
         if hasattr(self, 'as_listbox'):
@@ -698,6 +722,13 @@ This application is licensed under CC BY-NC 4.0. Commercial use requires explici
             data = message.get("data", {})
             if not data:
                 return
+
+            # Save raw update to local CSV file using DataManager
+            try:
+                self.data_manager.save_update(data)
+            except Exception as e:
+                # Log error but don't stop processing
+                logging.error(f"Failed to save update to local file: {e}")
                 
             # Get list of AS numbers from the listbox for filtering
             as_filters = set()

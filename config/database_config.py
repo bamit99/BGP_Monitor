@@ -93,7 +93,7 @@ def check_connection():
         # Close the driver
         driver.close()
         
-        logger.info("Successfully connected to Neo4j database")
+        # logger.info("Successfully connected to Neo4j database") # Removed to reduce log noise
         return True
         
     except Exception as e:

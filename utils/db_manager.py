@@ -1,4 +1,5 @@
 from neo4j import GraphDatabase
+from neo4j.exceptions import ClientError
 import logging
 from datetime import datetime
 
@@ -22,40 +23,44 @@ class BGPDatabaseManager:
             logging.error(f"Failed to connect to Neo4j: {e}")
             raise
             
+    def _create_schema_tx(self, tx):
+        """Transaction function to create schema elements."""
+        # Ensure clean state for alert_id uniqueness: drop constraint and any index on the property
+        tx.run("DROP CONSTRAINT ON (a:SecurityAlert) ASSERT a.alert_id IS UNIQUE IF EXISTS")
+        tx.run("DROP INDEX ON :SecurityAlert(alert_id) IF EXISTS")
+
+        # Now, create the unique constraint for alert_id (implicitly creates an index)
+        # Use IF NOT EXISTS for idempotency, even after attempting drops
+        tx.run("CREATE CONSTRAINT security_alert_id_unique IF NOT EXISTS FOR (a:SecurityAlert) REQUIRE a.alert_id IS UNIQUE")
+
+        # Create indexes for non-unique properties used in lookups
+        tx.run("""
+            CREATE INDEX security_alert_timestamp IF NOT EXISTS
+            FOR (a:SecurityAlert)
+            ON (a.timestamp)
+        """)
+        tx.run("""
+            CREATE INDEX security_alert_severity IF NOT EXISTS
+            FOR (a:SecurityAlert)
+            ON (a.severity)
+        """)
+
     def _init_schema(self):
-        """Initialize database schema with indexes and constraints."""
+        """Initialize database schema with indexes and constraints using a transaction."""
         try:
             with self.driver.session() as session:
-                # Create indexes
-                session.run("""
-                    CREATE INDEX security_alert_id IF NOT EXISTS
-                    FOR (a:SecurityAlert)
-                    ON (a.alert_id)
-                """)
-                
-                session.run("""
-                    CREATE INDEX security_alert_timestamp IF NOT EXISTS
-                    FOR (a:SecurityAlert)
-                    ON (a.timestamp)
-                """)
-                
-                session.run("""
-                    CREATE INDEX security_alert_severity IF NOT EXISTS
-                    FOR (a:SecurityAlert)
-                    ON (a.severity)
-                """)
-                
-                # Create constraints
-                session.run("""
-                    CREATE CONSTRAINT security_alert_id_unique IF NOT EXISTS
-                    FOR (a:SecurityAlert)
-                    REQUIRE a.alert_id IS UNIQUE
-                """)
-                
+                session.write_transaction(self._create_schema_tx)
             logging.info("Successfully initialized database schema")
-            
+        except ClientError as e:
+            # Check if it's the specific "IndexAlreadyExists" or "ConstraintAlreadyExists" error
+            if "already exists" in str(e).lower():
+                logging.info(f"Schema initialization: Index/Constraint likely already exists ({e.code}). Proceeding.")
+            else:
+                # Log other ClientErrors as errors
+                logging.error(f"Error initializing database schema (ClientError): {e}")
         except Exception as e:
-            logging.error(f"Error initializing database schema: {e}")
+            # Log other unexpected exceptions as errors
+            logging.error(f"Unexpected error initializing database schema: {e}")
             # Don't raise - schema initialization should not block application startup
     
     def close(self):
