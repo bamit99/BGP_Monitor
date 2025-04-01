@@ -265,14 +265,15 @@ class BGPMonitorGUI:
         region = self.region_var.get()
         self.collector_listbox.delete(0, tk.END)
         
-        if region in self.get_all_regions():
-            collectors = self.get_collectors_by_region(region)
-            for collector_id in collectors:
-                location = self.get_collector_location(collector_id)
-                self.collector_listbox.insert(tk.END, f"{collector_id} ({location})")
+        collectors = self.get_collectors_by_region(region)
+        for collector in collectors:
+            location = self.get_collector_location(collector)
+            display_text = f"{collector} ({location})"
+            self.collector_listbox.insert(tk.END, display_text)
+            
+        # Update button state
+        self.update_start_button_state()
         
-        self.save_current_settings()  # Save after updating region
-
     def update_start_button_state(self, event=None):
         """Update the state of the Start Monitoring button based on collector selection."""
         if not hasattr(self, 'start_button') or not hasattr(self, 'collector_listbox'):
@@ -382,7 +383,7 @@ class BGPMonitorGUI:
         while self.is_monitoring:
             try:
                 # Get selected collectors
-                collectors = [item[0] for item in self.collectors_tree.selection()]
+                collectors = [self.collector_listbox.get(idx) for idx in self.collector_listbox.curselection()]
                 if not collectors:
                     self.log_message("No collectors selected")
                     return
@@ -836,13 +837,22 @@ This application is licensed under CC BY-NC 4.0. Commercial use requires explici
             if not uri or not username or not password:
                 self.entries_label.config(text="Entry Count: N/A")
                 return
+
+            # Create a driver and check if BGPUpdate label exists first
             driver = GraphDatabase.driver(uri, auth=(username, password))
             with driver.session() as session:
-                result = session.run("MATCH (u:BGPUpdate) RETURN count(u) AS count")
-                record = result.single()
-                count = record.get("count") if record else 0
+                # Check if label exists first
+                result = session.run("CALL db.labels() YIELD label")
+                labels = [record["label"] for record in result]
+                
+                if "BGPUpdate" not in labels:
+                    self.entries_label.config(text="Entry Count: 0")
+                else:
+                    result = session.run("MATCH (u:BGPUpdate) RETURN count(u) AS count")
+                    record = result.single()
+                    count = record.get("count") if record else 0
+                    self.entries_label.config(text=f"Entry Count: {count}")
             driver.close()
-            self.entries_label.config(text=f"Entry Count: {count}")
         except Exception as e:
             self.entries_label.config(text="Entry Count: Error")
             print(f"Error updating entry count: {e}")

@@ -1,6 +1,8 @@
 {
     "region": "Europe",
-    "collectors": [],
+    "collectors": [
+        "rrc01 (London, UK)"
+    ],
     "as_filters": [
         "AS8220"
     ]

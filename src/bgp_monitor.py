@@ -1,6 +1,7 @@
 """Main BGP monitoring application."""
 import asyncio
 import logging
+import inspect
 import json
 import time
 from datetime import datetime
@@ -52,10 +53,15 @@ class BGPMonitor:
             uri = "wss://ris-live.ripe.net/v1/ws/"
             async with websockets.connect(uri) as websocket:
                 self.websocket = websocket
+                self._last_keepalive = time.time()  # Initialize last_keepalive when connection is established
                 
                 # Subscribe to collectors
                 for collector in collectors:
-                    await self._subscribe(collector)
+                    try:
+                        await self._subscribe(collector)
+                    except Exception as e:
+                        logging.error(f"Failed to subscribe to collector {collector}: {e}")
+                        continue
                 
                 # Start keepalive task
                 keepalive_task = asyncio.create_task(self._keepalive_loop())
@@ -70,14 +76,28 @@ class BGPMonitor:
                         self._last_keepalive = time.time()
                         
                         # Process message
-                        data = json.loads(message)
-                        if callback:
-                            callback(data)
+                        try:
+                            data = json.loads(message)
+                            if callback:
+                                if inspect.iscoroutinefunction(callback):
+                                    await callback(data)
+                                else:
+                                    callback(data)
+                        except json.JSONDecodeError as e:
+                            logging.error(f"Failed to parse message: {e}")
+                            continue
                             
                     except asyncio.TimeoutError:
                         if time.time() - self._last_keepalive > self._keepalive_timeout:
-                            raise ConnectionError("Keepalive timeout")
-                            
+                            logging.error("Keepalive timeout")
+                            break
+                    except websockets.exceptions.ConnectionClosed:
+                        logging.error("WebSocket connection closed")
+                        break
+                    except Exception as e:
+                        logging.error(f"Error in message loop: {e}")
+                        break
+                
                 # Clean up
                 keepalive_task.cancel()
                 try:
@@ -96,9 +116,12 @@ class BGPMonitor:
         try:
             while self.is_monitoring and self.websocket:
                 await asyncio.sleep(self._keepalive_interval)
-                if self.websocket and self.websocket.open:
-                    await self.websocket.ping()
-                    self._last_keepalive = time.time()
+                if self.websocket:
+                    try:
+                        await self.websocket.ping()
+                        self._last_keepalive = time.time()
+                    except websockets.exceptions.ConnectionClosed:
+                        break
         except Exception as e:
             logging.error(f"Keepalive error: {e}")
             
@@ -108,13 +131,29 @@ class BGPMonitor:
             return False
             
         try:
+            # Extract just the collector ID (e.g. "rrc01" from "rrc01 (London, UK)")
+            collector_id = collector.split()[0] if collector else ""
+            
             subscribe_message = {
                 "type": "ris_subscribe",
                 "data": {
-                    "host": collector
+                    "host": collector_id,
+                    "type": "UPDATE",  # Reverted to uppercase as required by API
+                    # "require": ["path", "peer", "prefix"]  # Removed require field to test subscription
                 }
             }
+            logging.info(f"Subscribing to collector {collector_id} with message: {subscribe_message}")
             await self.websocket.send(json.dumps(subscribe_message))
+            
+            # Wait for subscription response
+            response = await self.websocket.recv()
+            response_data = json.loads(response)
+            if response_data.get("type") == "ris_error":
+                logging.error(f"Subscription error for {collector_id}: {response_data.get('data', {}).get('message')}")
+                return False
+            else:
+                logging.info(f"Successfully subscribed to {collector_id}")
+            
             return True
         except Exception as e:
             logging.error(f"Subscribe error for {collector}: {e}")
@@ -128,33 +167,39 @@ class BGPMonitor:
         """Process BGP update message."""
         try:
             data = message.get("data", {})
+            msg_type = message.get("type")
             
+            if msg_type == "ris_error":
+                logging.error(f"RIS error: {message}")
+                return None
+                
+            if msg_type != "ris_message":
+                logging.debug(f"Ignoring non-RIS message: {msg_type}")
+                return None
+                
             # Basic message info
-            update_info = {
-                "timestamp": datetime.fromtimestamp(data.get("timestamp", 0)),
-                "collector": data.get("host", "unknown"),
-                "peer_ip": data.get("peer", ""),
-                "peer_asn": data.get("peer_asn", ""),
-            }
+            timestamp = data.get("timestamp")
+            peer = data.get("peer", {})
+            peer_asn = peer.get("asn")
             
             # Process announcements
             announcements = data.get("announcements", [])
             if announcements:
-                update_info["type"] = "announcement"
-                update_info.update({
-                    "prefix": announcements[0].get("prefix", ""),
-                    "as_path": ",".join(map(str, data.get("path", []))),
-                    "communities": str(data.get("community", [])),
-                    "next_hop": announcements[0].get("next_hop", "")
-                })
+                logging.info(f"Received {len(announcements)} announcements from AS{peer_asn}")
                 
             # Process withdrawals
             withdrawals = data.get("withdrawals", [])
             if withdrawals:
-                update_info["type"] = "withdrawal"
-                update_info["prefix"] = withdrawals[0]
+                logging.info(f"Received {len(withdrawals)} withdrawals from AS{peer_asn}")
                 
-            return update_info
+            # Store in database if available
+            if self.db_manager:
+                try:
+                    await self.db_manager.store_update(data)
+                except Exception as e:
+                    logging.error(f"Failed to store update in database: {e}")
+                    
+            return data
             
         except Exception as e:
             logging.error(f"Error processing BGP message: {e}")

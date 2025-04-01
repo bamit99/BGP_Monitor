@@ -338,7 +338,7 @@ class RPKIValidator:
     """RPKI validation using RIPE Validator API."""
     
     def __init__(self):
-        self.validator_url = "https://rpki-validator.ripe.net/api/v1/validity"
+        self.validator_url = "https://stat.ripe.net/data/rpki-validation/data.json"
         self.cache = {}  # Simple cache for validation results
         self.cache_duration = timedelta(hours=1)
     
@@ -364,22 +364,29 @@ class RPKIValidator:
             # Query RIPE validator
             params = {
                 "prefix": prefix,
-                "asn": f"AS{origin_as}"
+                "resource": str(origin_as)  # Use 'resource' and just the number
             }
             response = requests.get(self.validator_url, params=params, timeout=5)
             response.raise_for_status()
             data = response.json()
             
-            # Parse validation result
-            validity = data.get("validity", {})
-            state = validity.get("state", "UNKNOWN")
-            reason = validity.get("description")
-            roas = data.get("validating_roas", [])
-            
+            # Parse validation result from RIPEstat API
+            api_data = data.get("data", {}) # RIPEstat nests results under 'data'
+            state_raw = api_data.get("status", "unknown").upper()
+            reason = api_data.get("description")
+
+            # Map RIPEstat status to our internal states
+            if state_raw == "VALID":
+                state = "VALID"
+            elif state_raw in ["INVALID_ASN", "INVALID_LENGTH"]:
+                state = "INVALID"
+            else: # Includes "UNKNOWN" and any other unexpected values
+                state = "UNKNOWN"
+
             result = RPKIValidationResult(
                 state=state,
                 reason=reason,
-                roa_prefixes=roas
+                roa_prefixes=None # This API doesn't provide ROA details in the same way
             )
             
             # Cache the result
@@ -411,10 +418,7 @@ def check_rpki_validity(prefix: str, origin_as: Optional[int]) -> Tuple[bool, Li
     
     if result.state == "INVALID":
         reasons = [f"RPKI Invalid: {result.reason}"]
-        if result.roa_prefixes:
-            reasons.append("Valid ROAs found:")
-            for roa in result.roa_prefixes:
-                reasons.append(f"  - ASN: {roa.get('asn')}, Prefix: {roa.get('prefix')}")
+        # No ROA details available from this specific API endpoint to add here
         return True, reasons
         
     return False, []
