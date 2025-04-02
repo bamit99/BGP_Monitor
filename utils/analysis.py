@@ -20,8 +20,8 @@ from typing import Dict, List, Tuple, Set, Any, Optional
 
 # Import security analyzer for access to critical prefixes and ASNs
 from utils.security_analyzer import (
-    UK_CRITICAL_PREFIXES, 
-    UK_TELECOM_ASNS,
+    UK_CRITICAL_PREFIXES,
+    # UK_TELECOM_ASNS, # Removed import
     is_critical_prefix
 )
 
@@ -60,23 +60,8 @@ class BGPAnalyzer:
         uk_relevant = pd.DataFrame()
         
         try:
-            # Filter by UK telecom ASNs in the path
-            if 'as_path' in df.columns:
-                # Create a function to check if path contains UK ASNs
-                def contains_uk_asn(path):
-                    if not path or pd.isna(path):
-                        return False
-                    try:
-                        # Handle both comma and semicolon separated paths
-                        separator = ';' if ';' in str(path) else ','
-                        asns = [int(asn) for asn in str(path).split(separator)]
-                        return any(asn in UK_TELECOM_ASNS for asn in asns)
-                    except:
-                        return False
-                
-                # Apply the filter
-                uk_as_filter = df['as_path'].apply(contains_uk_asn)
-                
+            # Removed filtering by UK telecom ASNs in the path
+            uk_as_filter = pd.Series([False] * len(df)) # Create a series of False to avoid breaking logic below
             # Filter by critical prefixes
             if 'prefix' in df.columns:
                 uk_prefix_filter = df['prefix'].apply(is_critical_prefix)
@@ -182,24 +167,8 @@ class BGPAnalyzer:
             uk_data = self.filter_uk_data(df)
             
             if not uk_data.empty:
-                # UK telecom AS appearance counts
-                uk_as_appearances = {}
-                
-                if 'as_path' in uk_data.columns:
-                    for _, row in uk_data.iterrows():
-                        if not pd.isna(row['as_path']):
-                            try:
-                                # Handle both comma and semicolon separated paths
-                                path_str = str(row['as_path'])
-                                separator = ';' if ';' in path_str else ','
-                                asns = [int(asn) for asn in path_str.split(separator)]
-                                for asn in asns:
-                                    if asn in UK_TELECOM_ASNS:
-                                        uk_as_appearances[asn] = uk_as_appearances.get(asn, 0) + 1
-                            except:
-                                continue
-                
-                results['uk_telecom_as_activity'] = uk_as_appearances
+                # Removed UK telecom AS appearance counts analysis
+                # results['uk_telecom_as_activity'] = {} # Or remove the key entirely
                 
                 # Critical prefix activity
                 if 'prefix' in uk_data.columns:
@@ -262,8 +231,8 @@ class BGPAnalyzer:
                     # Add nodes
                     for asn in asns:
                         if asn not in G:
-                            # Highlight UK telecom ASNs
-                            is_uk = asn in UK_TELECOM_ASNS
+                            # Removed UK highlighting logic
+                            is_uk = False # Default to False
                             G.add_node(asn, is_uk=is_uk)
                     
                     # Add edges (AS relationships)
@@ -309,21 +278,12 @@ class BGPAnalyzer:
                 node_x.append(x)
                 node_y.append(y)
                 
-                # Text label
-                if node in UK_TELECOM_ASNS:
-                    uk_label = "UK Telecom "
-                else:
-                    uk_label = ""
+                # Simplified text label
+                node_text.append(f"AS{node}")
                 
-                node_text.append(f"AS{node}<br>{uk_label}")
-                
-                # Size - make UK telecoms larger
-                if node in UK_TELECOM_ASNS:
-                    node_size.append(20)
-                    node_color.append("red")
-                else:
-                    node_size.append(10)
-                    node_color.append("blue")
+                # Uniform node size and color
+                node_size.append(10)
+                node_color.append("blue")
             
             # Prepare edge attributes
             edge_x = []
@@ -379,7 +339,7 @@ class BGPAnalyzer:
             
             # Update layout
             fig.update_layout(
-                title='AS Relationship Graph (Red nodes = UK Telecom ASNs)',
+                title='AS Relationship Graph', # Removed UK specific text
                 titlefont_size=16,
                 showlegend=False,
                 hovermode='closest',

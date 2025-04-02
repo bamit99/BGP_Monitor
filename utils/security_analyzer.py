@@ -26,6 +26,7 @@ from utils.bgp_utils import ( # Import AS relationship functions
     get_as_relationship,
     P2C, P2P, C2P, S2S, UNKNOWN
 )
+from utils.as_lookup import ASLookup # Added import
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -36,32 +37,19 @@ CONFIG_DIR = Path(__file__).parent.parent / "config"
 
 # Load UK critical prefixes
 UK_CRITICAL_PREFIXES = set()
-UK_TELECOM_ASNS = set()
+# UK_TELECOM_ASNS = set() # Removed UK specific list
 TRUSTED_TRANSIT_ASNS = set()
 KNOWN_BAD_ACTORS = set()
 
 # Create data directory for security config if it doesn't exist
 CONFIG_DIR.mkdir(exist_ok=True)
 
-# Default UK Telecom ASNs - Major UK providers
-DEFAULT_UK_TELECOM_ASNS = {
-    2856,    # British Telecom
-    5089,    # Virgin Media
-    5607,    # Sky Broadband
-    12576,   # Vodafone UK
-    13285,   # TalkTalk
-    15412,   # Vodafone Group
-    5378,    # Vodafone Enterprise
-    3292,    # TDC/Three
-    6871,    # Plusnet
-    35228,   # O2 UK
-    34173,   # NATS (Air Traffic Control)
-}
+# Removed DEFAULT_UK_TELECOM_ASNS block
 
 # Try to load configuration, or create with defaults if not exists
 def load_security_config():
     """Load security configuration or create with defaults if not exists."""
-    global UK_CRITICAL_PREFIXES, UK_TELECOM_ASNS, TRUSTED_TRANSIT_ASNS, KNOWN_BAD_ACTORS
+    global UK_CRITICAL_PREFIXES, TRUSTED_TRANSIT_ASNS, KNOWN_BAD_ACTORS # Removed UK_TELECOM_ASNS
     
     config_file = CONFIG_DIR / "security_config.json"
     
@@ -71,12 +59,11 @@ def load_security_config():
                 config = json.load(f)
                 
             UK_CRITICAL_PREFIXES = set(config.get("uk_critical_prefixes", []))
-            UK_TELECOM_ASNS = set(config.get("uk_telecom_asns", []))
+            # UK_TELECOM_ASNS = set(config.get("uk_telecom_asns", [])) # Removed loading UK ASNs
             TRUSTED_TRANSIT_ASNS = set(config.get("trusted_transit_asns", []))
             KNOWN_BAD_ACTORS = set(config.get("known_bad_actors", []))
             
-            logger.info(f"Loaded security configuration: {len(UK_CRITICAL_PREFIXES)} critical prefixes, "
-                       f"{len(UK_TELECOM_ASNS)} telecom ASNs")
+            logger.info(f"Loaded security configuration: {len(UK_CRITICAL_PREFIXES)} critical prefixes.") # Simplified log message
         except Exception as e:
             logger.error(f"Error loading security config: {e}")
             # Initialize with defaults
@@ -88,7 +75,7 @@ def load_security_config():
 
 def init_default_config():
     """Initialize security configuration with default values."""
-    global UK_CRITICAL_PREFIXES, UK_TELECOM_ASNS, TRUSTED_TRANSIT_ASNS, KNOWN_BAD_ACTORS
+    global UK_CRITICAL_PREFIXES, TRUSTED_TRANSIT_ASNS, KNOWN_BAD_ACTORS # Removed UK_TELECOM_ASNS
     
     # Default critical prefixes (examples)
     UK_CRITICAL_PREFIXES = {
@@ -99,8 +86,7 @@ def init_default_config():
         "194.36.0.0/16",   # Example UK telecom
     }
     
-    # Default UK Telecom ASNs
-    UK_TELECOM_ASNS = DEFAULT_UK_TELECOM_ASNS
+    # Removed setting UK_TELECOM_ASNS
     
     # Default trusted transit providers
     TRUSTED_TRANSIT_ASNS = {
@@ -128,7 +114,7 @@ def save_security_config():
     
     config = {
         "uk_critical_prefixes": list(UK_CRITICAL_PREFIXES),
-        "uk_telecom_asns": list(UK_TELECOM_ASNS),
+        # "uk_telecom_asns": list(UK_TELECOM_ASNS), # Removed saving UK ASNs
         "trusted_transit_asns": list(TRUSTED_TRANSIT_ASNS),
         "known_bad_actors": list(KNOWN_BAD_ACTORS),
     }
@@ -145,6 +131,9 @@ load_security_config()
 
 # Load AS relationship data on startup
 load_as_relationships()
+
+# Initialize AS Lookup globally
+as_lookup = ASLookup()
 
 def is_critical_prefix(prefix: str) -> bool:
     """Check if prefix is critical for UK infrastructure."""
@@ -163,16 +152,24 @@ def is_critical_prefix(prefix: str) -> bool:
     except Exception:
         return False
 
-def involves_uk_asn(as_path: str) -> bool:
-    """Check if AS path involves UK telecom ASNs."""
+def get_path_countries(as_path: str) -> Set[str]:
+    """Get the set of unique countries associated with ASNs in the path."""
+    countries = set()
     if not as_path:
-        return False
-    
+        return countries
+
     try:
-        asns = [int(asn) for asn in as_path.split(",")]
-        return any(asn in UK_TELECOM_ASNS for asn in asns)
-    except:
-        return False
+        asns = [asn for asn in as_path.split(",") if asn.isdigit()]
+        # Use bulk lookup for potentially better performance if implemented well in ASLookup
+        # For simplicity here, lookup one by one
+        for asn_str in asns:
+            info = as_lookup.get_as_info(asn_str) # Use the global instance
+            if info and info.get('country'):
+                countries.add(info['country'].upper()) # Add country code (uppercase)
+    except Exception as e:
+        logger.error(f"Error getting countries for path '{as_path}': {e}")
+
+    return countries
 
 def get_origin_as(as_path: str) -> Optional[int]:
     """Extract origin AS from AS path."""
@@ -221,20 +218,10 @@ def check_unusual_transit(as_path: str) -> Tuple[bool, List[str]]:
         asns = [int(asn) for asn in as_path.split(",")]
         unusual = []
         
-        # Check if UK telecom AS appears in transit position for another UK AS
-        for i in range(len(asns) - 1):
-            # If a UK telecom AS is providing transit for another UK telecom AS
-            # that could be unusual depending on the providers
-            # Skip if it's the same ASN (prepending)
-            if asns[i] in UK_TELECOM_ASNS and asns[i+1] in UK_TELECOM_ASNS and asns[i] != asns[i+1]:
-                unusual.append(f"Unusual UK transit: AS{asns[i]} -> AS{asns[i+1]}")
-                
-        # Check if a non-trusted AS is providing transit for a UK telecom AS
-        for i in range(len(asns) - 1):
-            if (asns[i] not in TRUSTED_TRANSIT_ASNS and 
-                asns[i] not in UK_TELECOM_ASNS and
-                asns[i+1] in UK_TELECOM_ASNS):
-                unusual.append(f"Untrusted transit for UK telecom: AS{asns[i]} -> AS{asns[i+1]}")
+        # Removed UK-specific transit checks
+        # Consider adding a generalized check for untrusted transit if needed,
+        # e.g., check if asns[i] not in TRUSTED_TRANSIT_ASNS and relationship is C2P.
+        # For now, keeping it simple and removing UK specifics.
                 
         # Check if known bad actor is in path
         for asn in asns:
@@ -480,8 +467,8 @@ class SecurityAlertLogger:
             with open(self.current_file, 'w', newline='') as csvfile:
                 writer = csv.writer(csvfile)
                 writer.writerow([
-                    'Timestamp', 'Severity', 'Prefix', 'AS Path', 
-                    'Peer ASN', 'Reasons', 'Critical Prefix', 'UK Telecom'
+                    'Timestamp', 'Severity', 'Prefix', 'AS Path',
+                    'Peer ASN', 'Reasons', 'Critical Prefix' # Removed 'UK Telecom' header
                 ])
     
     def log_alert(self, alert, db_manager=None):
@@ -519,8 +506,7 @@ class SecurityAlertLogger:
                 alert['as_path'],
                 alert['peer_asn'],
                 ';'.join(alert['reasons']),
-                'Yes' if alert['is_critical_prefix'] else 'No',
-                'Yes' if alert['involves_uk_telecom'] else 'No'
+                'Yes' if alert['is_critical_prefix'] else 'No' # Removed 'involves_uk_telecom' value
             ])
 
 def check_suspicious_patterns(timestamp, prefix, as_path, peer_asn, prefix_history, db_manager):
@@ -549,15 +535,16 @@ def check_suspicious_patterns(timestamp, prefix, as_path, peer_asn, prefix_histo
     # Extract origin AS from path
     origin_as = get_origin_as(as_path)
     
-    # 1. Check if this is a critical UK prefix
+    # 1. Check if this is a critical prefix (using the static list)
     is_critical = is_critical_prefix(prefix)
-    involves_uk = involves_uk_asn(as_path)
-    
+    # Get countries involved in the path (dynamic lookup)
+    path_countries = get_path_countries(as_path)
+
     # Set initial severity based on prefix criticality
     if is_critical:
         severity = "HIGH"
-    elif involves_uk:
-        severity = "MEDIUM"
+    # Note: Removed severity adjustment based on UK involvement.
+    # Could add logic here based on path_countries if needed later.
     
     # 2. Check for AS path prepending
     if check_path_prepending(as_path):
@@ -605,7 +592,8 @@ def check_suspicious_patterns(timestamp, prefix, as_path, peer_asn, prefix_histo
             'reasons': reasons,
             'severity': severity,
             'is_critical_prefix': is_critical,
-            'involves_uk_telecom': involves_uk
+            # 'involves_uk_telecom': involves_uk # Removed field
+            'path_countries': list(path_countries) # Optionally add list of countries found
         }
         
         # Log the alert
@@ -639,19 +627,7 @@ def add_critical_prefix(prefix: str) -> bool:
         logger.error(f"Invalid prefix format: {e}")
         return False
 
-# Function to add a UK telecom ASN to monitoring
-def add_uk_telecom_asn(asn: int) -> bool:
-    """Add a UK telecom ASN to monitoring."""
-    global UK_TELECOM_ASNS
-    
-    try:
-        UK_TELECOM_ASNS.add(int(asn))
-        save_security_config()
-        return True
-    except Exception as e:
-        logger.error(f"Invalid ASN format: {e}")
-        return False
-
+# Removed add_uk_telecom_asn function
 # Function to add a known bad actor ASN
 def add_bad_actor_asn(asn: int) -> bool:
     """Add a known problematic ASN to monitoring."""

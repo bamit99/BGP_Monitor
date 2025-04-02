@@ -30,11 +30,11 @@ class BGPDatabaseManager:
         # Note: Using deprecated id() function, replace if possible in future Neo4j versions
         cleanup_query = """
         MATCH (a:SecurityAlert)
-        WITH a.alert_id AS alertId, collect(id(a)) AS nodeIds, count(a) AS cnt
+        WITH a.alert_id AS alertId, collect(elementId(a)) AS nodeIds, count(a) AS cnt
         WHERE cnt > 1
         WITH alertId, nodeIds, min(nodeIds) as minId
         UNWIND nodeIds AS nodeId
-        MATCH (n) WHERE id(n) = nodeId AND id(n) <> minId
+        MATCH (n) WHERE elementId(n) = nodeId AND elementId(n) <> minId
         DETACH DELETE n
         """
         result = tx.run(cleanup_query)
@@ -312,8 +312,7 @@ class BGPDatabaseManager:
                         as_path: $as_path,
                         peer_asn: $peer_asn,
                         reasons: $reasons,
-                        is_critical_prefix: $is_critical,
-                        involves_uk_telecom: $involves_uk
+                        is_critical_prefix: $is_critical
                     })
                     WITH a
                     MATCH (u:BGPUpdate {update_id: $update_id})
@@ -327,7 +326,7 @@ class BGPDatabaseManager:
                     peer_asn=alert['peer_asn'],
                     reasons=";".join(alert['reasons']),
                     is_critical=alert['is_critical_prefix'],
-                    involves_uk=alert['involves_uk_telecom'],
+                    # Parameter removed implicitly by removing from query
                     update_id=f"{alert['timestamp'].isoformat()}_{alert['prefix']}"
                 )
                 return True
@@ -378,7 +377,7 @@ class BGPDatabaseManager:
                         'peer_asn': alert['peer_asn'],
                         'reasons': alert['reasons'].split(';'),
                         'is_critical_prefix': alert['is_critical_prefix'],
-                        'involves_uk_telecom': alert['involves_uk_telecom']
+                        # Field removed from dictionary construction
                     })
                 return alerts
         except Exception as e:
@@ -422,8 +421,7 @@ class BGPDatabaseManager:
                         a.as_path as as_path,
                         a.peer_asn as peer_asn,
                         a.reasons as reasons,
-                        a.is_critical_prefix as is_critical,
-                        a.involves_uk_telecom as involves_uk
+                        a.is_critical_prefix as is_critical
                     ORDER BY a.timestamp DESC
                 """
                 
@@ -435,7 +433,7 @@ class BGPDatabaseManager:
                     # Write header
                     writer.writerow([
                         'Timestamp', 'Severity', 'Prefix', 'AS Path', 
-                        'Peer ASN', 'Reasons', 'Critical Prefix', 'UK Telecom'
+                        'Peer ASN', 'Reasons', 'Critical Prefix'
                     ])
                     
                     # Write data
@@ -448,7 +446,7 @@ class BGPDatabaseManager:
                             record['peer_asn'],
                             record['reasons'],
                             'Yes' if record['is_critical'] else 'No',
-                            'Yes' if record['involves_uk'] else 'No'
+                            # Removed corresponding value write
                         ])
                 
                 return True

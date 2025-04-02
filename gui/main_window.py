@@ -22,6 +22,9 @@ from utils.security_analyzer import SecurityAlertLogger
 import time
 
 class BGPMonitorGUI:
+    # Attributes for sorting alerts treeview
+    _alerts_sort_col = "Timestamp"
+    _alerts_sort_reverse = False
     def __init__(self, root):
         """Initialize the GUI."""
         self.root = root
@@ -227,16 +230,18 @@ class BGPMonitorGUI:
         security_frame.pack(fill="both", expand=True, padx=5, pady=5)
         
         # Create alerts treeview
-        columns = ("Time", "Severity", "Type", "Details")
+        columns = ("Timestamp", "Severity", "Type", "Details") # Renamed first column
         self.alerts_tree = ttk.Treeview(security_frame, columns=columns, show="headings")
         
         # Configure columns
-        self.alerts_tree.heading("Time", text="Time")
+        # Setup heading commands for sorting
+        for col in columns:
+            self.alerts_tree.heading(col, text=col, command=lambda _col=col: self._on_alerts_header_click(_col))
         self.alerts_tree.heading("Severity", text="Severity")
         self.alerts_tree.heading("Type", text="Type")
         self.alerts_tree.heading("Details", text="Details")
         
-        self.alerts_tree.column("Time", width=100)
+        self.alerts_tree.column("Timestamp", width=150) # Renamed and increased width
         self.alerts_tree.column("Severity", width=70)
         self.alerts_tree.column("Type", width=100)
         self.alerts_tree.column("Details", width=300)
@@ -787,7 +792,7 @@ This application is licensed under CC BY-NC 4.0. Commercial use requires explici
 
                     self.bgp_monitor.db_manager.store_bgp_update(
                         timestamp=timestamp,
-                        collector=data.get("collector", "unknown"), # RRC ID
+                        collector=data.get("host", "unknown"), # Use 'host' field for collector ID
                         peer_asn=peer_asn,
                         prefix=prefix,
                         as_path=",".join(map(str, path)) if path else None,
@@ -991,32 +996,43 @@ This application is licensed under CC BY-NC 4.0. Commercial use requires explici
         """Add a security alert to the alerts panel and database."""
         if not alert:
             return
-            
+
         # Log alert to both CSV and database
+        # Note: The logger itself was modified to handle the missing 'involves_uk_telecom' field
         self.alert_logger.log_alert(alert, self.bgp_monitor.db_manager if self.bgp_monitor else None)
-            
-        timestamp = alert.get("timestamp", datetime.now()).strftime("%H:%M:%S")
+
+        # Format timestamp with date and time
+        timestamp_dt = alert.get("timestamp", datetime.now())
+        timestamp_str = timestamp_dt.strftime("%Y-%m-%d %H:%M:%S") if isinstance(timestamp_dt, datetime) else str(timestamp_dt)
         severity = alert.get("severity", "LOW")
-        
+
         # Determine alert type
         alert_type = "Unknown"
-        if "RPKI Invalid" in str(alert.get("reasons", [])):
+        reasons_str = "; ".join(alert.get("reasons", [])) # Join reasons once
+        if "RPKI Invalid" in reasons_str:
             alert_type = "RPKI Invalid"
-        elif "hijack" in str(alert.get("reasons", [])).lower():
+        elif "hijack" in reasons_str.lower():
             alert_type = "Possible Hijack"
-        elif "leak" in str(alert.get("reasons", [])).lower():
+        elif "leak" in reasons_str.lower():
             alert_type = "Route Leak"
-        elif "prepending" in str(alert.get("reasons", [])).lower():
+        elif "prepending" in reasons_str.lower():
             alert_type = "Path Manipulation"
-        
+        elif "transit" in reasons_str.lower():
+             alert_type = "Unusual Transit"
+        elif "problematic AS" in reasons_str:
+             alert_type = "Bad Actor"
+
         # Format details
-        details = "; ".join(alert.get("reasons", []))
+        details = reasons_str
         if len(details) > 100:
             details = details[:97] + "..."
-        
+
         # Insert at top of tree with appropriate tag
-        self.alerts_tree.insert("", 0, values=(timestamp, severity, alert_type, details), tags=(severity,))
-        
+        # Insert at END and get item ID for scrolling
+        item_id = self.alerts_tree.insert("", tk.END, values=(timestamp_str, severity, alert_type, details), tags=(severity,))
+        # Auto-scroll to the new item
+        self.alerts_tree.see(item_id)
+
         # Keep only last 100 alerts in tree
         if len(self.alerts_tree.get_children()) > 100:
             self.alerts_tree.delete(self.alerts_tree.get_children()[-1])
@@ -1056,6 +1072,86 @@ This application is licensed under CC BY-NC 4.0. Commercial use requires explici
         except Exception as e:
             messagebox.showerror("Error", f"Failed to export alerts: {str(e)}")
 
+    # --- Sorting Logic for Alerts Treeview ---
+
+    def _on_alerts_header_click(self, col):
+        """Handle clicks on the alerts treeview header to sort."""
+        if self._alerts_sort_col == col:
+            # Toggle sort direction if same column clicked
+            self._alerts_sort_reverse = not self._alerts_sort_reverse
+        else:
+            # Sort new column ascending
+            self._alerts_sort_col = col
+            self._alerts_sort_reverse = False
+
+        self._sort_alerts_column(col, self._alerts_sort_reverse)
+
+    def _sort_alerts_column(self, col, reverse):
+        """Sort the alerts treeview by the specified column."""
+        # Define severity mapping for sorting
+        severity_map = {"LOW": 0, "MEDIUM": 1, "HIGH": 2}
+
+        # Get data from treeview
+        try:
+            data = [(self.alerts_tree.set(item, col), item) for item in self.alerts_tree.get_children('')]
+        except tk.TclError:
+            # Handle cases where column might not exist (shouldn't happen with current setup)
+            # Use self.logger if available, otherwise print
+            log_func = getattr(self, 'logger', None)
+            if log_func:
+                 log_func.error(f"Error getting data for column '{col}' during sort.")
+            else:
+                 print(f"Error getting data for column '{col}' during sort.")
+            return
+
+        # Define sort key function
+        def sort_key(item_tuple):
+            value = item_tuple[0] # The value from the treeview cell
+            if col == "Severity":
+                return severity_map.get(value, -1) # Map severity string to number
+            elif col == "Timestamp":
+                 # Timestamps are strings "YYYY-MM-DD HH:MM:SS", sort naturally
+                 return value
+            else:
+                # For other columns (Type, Details), sort case-insensitively
+                return str(value).lower()
+
+        # Sort the data
+        try:
+            data.sort(key=sort_key, reverse=reverse)
+        except TypeError as e:
+            log_func = getattr(self, 'logger', None)
+            if log_func:
+                 log_func.error(f"Error sorting column '{col}': {e}. Data might have mixed types.")
+            else:
+                 print(f"Error sorting column '{col}': {e}. Data might have mixed types.")
+            # Attempt a simple string sort as fallback
+            try:
+                 data.sort(key=lambda x: str(x[0]), reverse=reverse)
+            except Exception as fallback_e:
+                 if log_func:
+                      log_func.error(f"Fallback string sort also failed for column '{col}': {fallback_e}")
+                 else:
+                      print(f"Fallback string sort also failed for column '{col}': {fallback_e}")
+                 return # Abort sort if fallback fails
+
+        # Reorder items in the treeview
+        for index, (val, item) in enumerate(data):
+            self.alerts_tree.move(item, '', index)
+
+        # Update column heading indicator (optional, but good UX)
+        # This requires a bit more setup to show arrows, skipping for now for simplicity
+        # For example: self.alerts_tree.heading(col, text=f"{col} {'▲' if not reverse else '▼'}")
+        # Need to reset other headings too.
+
+        log_func = getattr(self, 'logger', None)
+        if log_func:
+             log_func.info(f"Sorted alerts by '{col}' {'descending' if reverse else 'ascending'}")
+        else:
+             print(f"Sorted alerts by '{col}' {'descending' if reverse else 'ascending'}")
+
+# End of BGPMonitorGUI class definition
+
 def main():
     root = tk.Tk()
     app = BGPMonitorGUI(root)
@@ -1064,3 +1160,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# Removed the sorting methods from outside the class
