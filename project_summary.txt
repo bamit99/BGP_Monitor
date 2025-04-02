@@ -1,58 +1,73 @@
-# BGP Monitor Project Summary
+# Project Summary: BGP_Monitor
 
-This file provides a summary of the key files and directories within the BGP Monitor project.
+## Root Directory (d:/ClaudeProjects/BGP_Monitor)
 
-## Root Directory Files
+*   `.gitattributes`: Git attributes file.
+*   `.gitignore`: Specifies intentionally untracked files that Git should ignore.
+*   `bgp_collector.py`: Python script, likely related to collecting BGP data.
+*   `IMPROVEMENT_TRACKER.md`: Markdown file for tracking project improvements.
+*   `LICENSE`: Project license file.
+*   `main.py`: Main Python script, likely the entry point of the application.
+*   `project_summary.txt`: This file, summarizing the project structure.
+*   `README.md`: Project description, setup, and usage instructions.
+*   `requirements.txt`: Lists Python package dependencies for the project.
+*   `security_demo.py`: Python script, possibly demonstrating security features or vulnerabilities.
+*   `test_config.py`: Python script for testing configuration aspects.
+*   `test_neo4j.py`: Python script for testing Neo4j database interactions.
+*   `test_ui_config.py`: Python script for testing UI configuration.
 
-*   `.gitattributes`, `.gitignore`: Git configuration files.
-*   `bgp_collector.py`: (Seems potentially outdated or a specific utility, main logic is elsewhere).
-*   `HELP.md`: (Not reviewed, likely contains help information).
-*   `IMPROVEMENT_TRACKER.md`: (Not reviewed, likely tracks potential improvements).
-*   `LICENSE`: Contains the project's license information (CC BY-NC 4.0 mentioned in README).
-*   `main.py`: The main entry point for the application. Sets up the Tkinter GUI and handles signals.
-*   `project_summary.txt`: This file.
-*   `README.md`: Provides a comprehensive overview of the project, features, installation, configuration, and usage.
-*   `requirements.txt`: Lists the Python dependencies required for the project.
-*   `security_demo.py`: (Not reviewed, likely a script to demonstrate security features).
-*   `test_config.py`, `test_neo4j.py`, `test_ui_config.py`: (Not reviewed, likely test scripts).
+## cache/
 
-## Directories
+*   `as_cache.json`: JSON file, likely caching Autonomous System (AS) information.
 
-*   `.git/`: Contains Git repository metadata.
-*   `cache/`:
-    *   `as_cache.json`: Stores cached results from AS number lookups (`utils/as_lookup.py`).
-*   `config/`: Contains configuration files.
-    *   `collectors.py`: Defines BGP collector information (regions, locations).
-    *   `database_config.py`: Handles Neo4j connection details and status checks.
-    *   `database_config.ini`, `database_config_template.ini`: INI format for Neo4j configuration.
-    *   `db_config.json`, `db_config.json.template`: JSON format for Neo4j configuration.
-    *   `gui_settings.json`: Stores user preferences for the GUI (region, selected collectors, AS filters).
-    *   `security_config.json`: Stores lists of critical prefixes, UK telecom ASNs, trusted transit ASNs, and known bad actors used by the security analyzer.
-    *   `user_settings.json`: (Purpose unclear from review, potentially unused or for future features).
-*   `data/`: Default directory for storing runtime data.
-    *   `as_relationships.txt.bz2` (Expected by `bgp_utils.py`): CAIDA AS relationship data file (used for route leak detection).
-    *   `security_alerts/`: Stores daily CSV logs of detected security alerts (`utils/security_analyzer.py`).
-    *   `bgp_updates_YYYYMMDD_HHMM.csv`: Stores raw BGP updates logged via CSV (`utils/data_manager.py`).
-*   `gui/`: Contains the Graphical User Interface code.
-    *   `main_window.py`: Defines the main `BGPMonitorGUI` class, orchestrating the UI, monitoring, data processing, and analysis components.
-    *   `config_dialog.py`: (Not reviewed, likely the dialog window for DB configuration).
-*   `sample_data/`: (Not reviewed, likely contains sample BGP data or reports).
-*   `src/`: Contains the core application logic.
-    *   `bgp_monitor.py`: Handles the WebSocket connection to RIPE RIS, subscribes to collectors, receives BGP messages, and manages keepalives.
-    *   `connection_manager.py`: (Not reviewed, potentially refactored connection logic).
-*   `tests/`: Contains test scripts.
-    *   `query_suspicious.py`, `test_neo4j_connection.py`, `test_security_analyzer.py`, `test_websocket.py`, `validate_neo4j_data.py`, `verify_live_updates.py`: Various test scripts.
-    *   `test_ui/`: Contains UI test related files.
-*   `utils/`: Contains utility modules.
-    *   `analysis.py`: (Imported by `gui/main_window.py` as `BGPAnalyzer`, but file not present in listing - potentially removed or renamed).
-    *   `as_lookup.py`: Looks up ASN details from public sources (PeeringDB, RADB, RIRs) with caching.
-    *   `bgp_utils.py`: Provides helper functions for validating/formatting BGP data and loading/querying AS relationship data.
-    *   `config_manager.py`: Manages loading and saving application configurations (DB, GUI settings) from different file formats/locations.
-    *   `data_manager.py`: Handles saving raw BGP updates to daily CSV files.
-    *   `db_manager.py`: Manages all interactions with the Neo4j database (storing updates/alerts, querying data, schema initialization).
-    *   `security_analyzer.py`: Contains the core logic for analyzing BGP updates for security threats (hijacking, leaks, RPKI invalidity, etc.) based on configured rules. Includes the `SecurityAlertLogger`.
-    *   `ui_config_handler.py`: (Not reviewed, potentially related to GUI configuration persistence).
+## config/
 
-## Overall Functionality
+*   `collectors.py`: Python script for configuring BGP collectors.
+*   `database_config_template.ini`: Template for database configuration (INI format).
+*   `database_config.py`: Python script for handling database configuration.
+*   `db_config.json`: Database configuration file (JSON format).
+*   `db_config.json.template`: Template for `db_config.json`.
+*   `gui_settings.json`: Settings for the graphical user interface (JSON format).
+*   `security_config.json`: Security-related configuration (JSON format).
+*   `user_settings.json`: User-specific settings (JSON format).
 
-The BGP Monitor connects to RIPE RIS, collects live BGP updates, allows filtering by AS, processes updates, performs security analysis (detecting hijacks, leaks, RPKI issues, path problems), stores data in Neo4j and/or CSV files, and presents information and alerts through a Tkinter GUI.
+## gui/
+
+*   `config_dialog.py`: Python script for a configuration dialog window in the GUI.
+*   `main_window.py`: Python script defining the main window of the GUI.
+
+## sample_data/
+
+*   `reports/`: Directory likely containing sample report files. (Contents not listed)
+
+## src/
+
+*   `bgp_monitor.py`: Core BGP monitoring logic (Python script).
+*   `connection_manager.py`: Python script for managing connections (e.g., to collectors, database).
+
+## tests/
+
+*   `query_suspicious.py`: Python script for testing queries related to suspicious BGP activity.
+*   `test_neo4j_connection.py`: Python script for testing the Neo4j database connection.
+*   `test_security_analyzer.py`: Python script for testing the security analysis component.
+*   `test_websocket.py`: Python script for testing WebSocket functionality.
+*   `validate_neo4j_data.py`: Python script for validating data stored in Neo4j.
+*   `verify_live_updates.py`: Python script for verifying live data updates.
+*   `test_ui/`: Subdirectory for UI-specific tests.
+    *   `app.py`: Python script, possibly a test Flask/Dash app for the UI.
+    *   `requirements.txt`: Dependencies specific to the UI tests.
+    *   `templates/`: Directory for HTML templates used in UI tests. (Contents not listed)
+
+## utils/
+
+*   `analysis.py`: Python script containing data analysis functions.
+*   `as_lookup.py`: Python script for looking up Autonomous System information.
+*   `bgp_utils.py`: Utility functions related to BGP processing (Python script).
+*   `config_manager.py`: Python script for managing application configuration.
+*   `data_manager.py`: Python script for handling data loading, saving, or processing.
+*   `db_manager.py`: Python script for managing database interactions.
+*   `security_analyzer.py`: Python script for analyzing BGP data for security threats.
+*   `ui_config_handler.py`: Python script for handling UI configuration persistence or logic.
+
+---
+*Note: `.git` directory, `__pycache__` directories, and contents of some subdirectories are omitted for brevity.*
