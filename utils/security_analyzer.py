@@ -27,6 +27,7 @@ from utils.bgp_utils import ( # Import AS relationship functions
     P2C, P2P, C2P, S2S, UNKNOWN
 )
 from utils.as_lookup import ASLookup # Added import
+from utils.config_manager import config_manager # Import shared config manager
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -50,19 +51,19 @@ CONFIG_DIR.mkdir(exist_ok=True)
 def load_security_config():
     """Load security configuration or create with defaults if not exists."""
     global UK_CRITICAL_PREFIXES, TRUSTED_TRANSIT_ASNS, KNOWN_BAD_ACTORS # Removed UK_TELECOM_ASNS
-    
+
     config_file = CONFIG_DIR / "security_config.json"
-    
+
     if config_file.exists():
         try:
             with open(config_file, "r") as f:
                 config = json.load(f)
-                
+
             UK_CRITICAL_PREFIXES = set(config.get("uk_critical_prefixes", []))
             # UK_TELECOM_ASNS = set(config.get("uk_telecom_asns", [])) # Removed loading UK ASNs
             TRUSTED_TRANSIT_ASNS = set(config.get("trusted_transit_asns", []))
             KNOWN_BAD_ACTORS = set(config.get("known_bad_actors", []))
-            
+
             logger.info(f"Loaded security configuration: {len(UK_CRITICAL_PREFIXES)} critical prefixes.") # Simplified log message
         except Exception as e:
             logger.error(f"Error loading security config: {e}")
@@ -76,8 +77,8 @@ def load_security_config():
 def init_default_config():
     """Initialize security configuration with default values."""
     global UK_CRITICAL_PREFIXES, TRUSTED_TRANSIT_ASNS, KNOWN_BAD_ACTORS # Removed UK_TELECOM_ASNS
-    
-    # Default critical prefixes (examples)
+
+    # Default critical prefixes (examples) - Define prefixes whose announcements require extra scrutiny.
     UK_CRITICAL_PREFIXES = {
         "195.166.0.0/16",  # Example UK Government
         "194.159.0.0/16",  # Example UK financial
@@ -85,10 +86,10 @@ def init_default_config():
         "62.172.0.0/16",   # Example UK telecom
         "194.36.0.0/16",   # Example UK telecom
     }
-    
+
     # Removed setting UK_TELECOM_ASNS
-    
-    # Default trusted transit providers
+
+    # Default trusted transit providers - ASNs generally considered reliable for transit (used in potential future checks).
     TRUSTED_TRANSIT_ASNS = {
         174,    # Cogent
         3356,   # Level3
@@ -98,11 +99,11 @@ def init_default_config():
         6939,   # Hurricane Electric
         3257,   # GTT
         1273,   # Vodafone International
-        6453,   # TATA 
+        6453,   # TATA
         6762,   # Telecom Italia
     }
-    
-    # Known BGP bad actors
+
+    # Known BGP bad actors - ASNs identified as sources of malicious BGP activity (requires external threat intel).
     KNOWN_BAD_ACTORS = {
         # These would typically come from threat intelligence feeds
         # Empty by default - to be populated based on your threat intel
@@ -111,14 +112,14 @@ def init_default_config():
 def save_security_config():
     """Save the current security configuration to disk."""
     config_file = CONFIG_DIR / "security_config.json"
-    
+
     config = {
         "uk_critical_prefixes": list(UK_CRITICAL_PREFIXES),
         # "uk_telecom_asns": list(UK_TELECOM_ASNS), # Removed saving UK ASNs
         "trusted_transit_asns": list(TRUSTED_TRANSIT_ASNS),
         "known_bad_actors": list(KNOWN_BAD_ACTORS),
     }
-    
+
     try:
         with open(config_file, "w") as f:
             json.dump(config, f, indent=2)
@@ -135,19 +136,23 @@ load_as_relationships()
 # Initialize AS Lookup globally
 as_lookup = ASLookup()
 
+# Load app settings globally for security analysis parameters
+APP_SETTINGS = config_manager.load_app_settings()
+SECURITY_HEURISTICS_CONFIG = APP_SETTINGS.get("security_analysis", {}).get("heuristics", {})
+
 def is_critical_prefix(prefix: str) -> bool:
     """Check if prefix is critical for UK infrastructure."""
     try:
         prefix_net = ipaddress.ip_network(prefix)
-        
+
         # Check if this prefix is in our critical list
         for critical in UK_CRITICAL_PREFIXES:
             critical_net = ipaddress.ip_network(critical)
-            
+
             # If the prefix contains or is contained within a critical prefix
             if prefix_net.subnet_of(critical_net) or critical_net.subnet_of(prefix_net):
                 return True
-                
+
         return False
     except Exception:
         return False
@@ -175,7 +180,7 @@ def get_origin_as(as_path: str) -> Optional[int]:
     """Extract origin AS from AS path."""
     if not as_path:
         return None
-    
+
     try:
         asns = as_path.split(",")
         # Origin is the last AS in the path
@@ -183,19 +188,20 @@ def get_origin_as(as_path: str) -> Optional[int]:
     except:
         return None
 
-def check_path_prepending(as_path: str) -> bool:
+def check_path_prepending(as_path: str) -> Tuple[bool, str]:
     """Check for excessive AS path prepending."""
-    if not as_path:
-        return False
-    
+    config = SECURITY_HEURISTICS_CONFIG.get("prepending", {"enabled": True, "threshold": 5})
+    if not config.get("enabled", True) or not as_path:
+        return False, ""
+
     try:
         asns = as_path.split(",")
-        
+
         # Count consecutive repetitions
         current = None
         count = 0
         max_count = 0
-        
+
         for asn in asns:
             if asn == current:
                 count += 1
@@ -203,86 +209,97 @@ def check_path_prepending(as_path: str) -> bool:
             else:
                 current = asn
                 count = 1
-                
-        # More than 3 prepends is suspicious
-        return max_count > 3
+
+        # Check against configured threshold
+        threshold = config.get("threshold", 5)
+        if max_count > threshold:
+            reason = f"Excessive prepending detected (>{threshold} times)"
+            return True, reason
+        return False, ""
     except:
-        return False
+        return False, ""
 
 def check_unusual_transit(as_path: str) -> Tuple[bool, List[str]]:
     """Check for unusual transit arrangements."""
     if not as_path:
         return False, []
-    
+
     try:
         asns = [int(asn) for asn in as_path.split(",")]
         unusual = []
-        
+
         # Removed UK-specific transit checks
         # Consider adding a generalized check for untrusted transit if needed,
         # e.g., check if asns[i] not in TRUSTED_TRANSIT_ASNS and relationship is C2P.
         # For now, keeping it simple and removing UK specifics.
-                
+
         # Check if known bad actor is in path
         for asn in asns:
             if asn in KNOWN_BAD_ACTORS:
                 unusual.append(f"Known problematic AS in path: AS{asn}")
-                
+
         return len(unusual) > 0, unusual
     except:
         return False, []
 
-def check_possible_hijack(prefix: str, origin_as: Optional[int], 
-                         prefix_history: Dict) -> Tuple[bool, List[str]]:
+def check_possible_hijack(prefix: str, origin_as: Optional[int],
+                          previous_origin_as: Optional[int],
+                          app_settings: Dict = APP_SETTINGS) -> Tuple[bool, List[str]]: # Pass settings
     """Check if update suggests a possible prefix hijack."""
     if not prefix or not origin_as:
         return False, []
-    
+
     reasons = []
-    
-    # Check prefix history for origin changes
-    if prefix in prefix_history and len(prefix_history[prefix]) > 0:
-        # Get the most recent update for comparison
-        prev_update = prefix_history[prefix][-1]
-        prev_origin = None
-        
-        if prev_update.get('as_path'):
-            prev_origin = get_origin_as(prev_update['as_path'])
-        
-        # If current origin is different from previous origin, flag it
-        if prev_origin and prev_origin != origin_as:
-            # If this is a UK critical prefix, this is high severity
-            if is_critical_prefix(prefix):
-                reasons.append(f"CRITICAL: Origin change for UK critical prefix {prefix} "
-                              f"from AS{prev_origin} to AS{origin_as}")
-            else:
-                reasons.append(f"Origin change for prefix {prefix} "
-                              f"from AS{prev_origin} to AS{origin_as}")
-    
+
+    # Check if the origin AS has changed compared to the cached previous origin
+    if previous_origin_as is not None and previous_origin_as != origin_as:
+        # If this is a UK critical prefix, this is high severity
+        if is_critical_prefix(prefix):
+            reasons.append(f"CRITICAL: Origin change for UK critical prefix {prefix} "
+                           f"from AS{previous_origin_as} to AS{origin_as}")
+        else:
+            reasons.append(f"Origin change for prefix {prefix} "
+                           f"from AS{previous_origin_as} to AS{origin_as}")
+
     # Check for more-specific announcements of critical prefixes
     try:
         prefix_net = ipaddress.ip_network(prefix)
-        
+
         for critical in UK_CRITICAL_PREFIXES:
-            critical_net = ipaddress.ip_network(critical)
-            
-            # If this is a more specific of a critical prefix with different origin
-            if (prefix_net.subnet_of(critical_net) and 
-                prefix != critical and 
-                prefix_net.prefixlen > critical_net.prefixlen + 3):  # Much more specific
-                
-                reasons.append(f"CRITICAL: Suspicious more-specific announcement of UK prefix: "
-                              f"{prefix} (parent: {critical})")
-    except:
-        pass
-    
+            try:
+                critical_net = ipaddress.ip_network(critical)
+            except ValueError:
+                logger.warning(f"Skipping invalid critical prefix format in config: {critical}")
+                continue # Skip this critical prefix if format is wrong
+
+            # --- Check IP Version Compatibility ---
+            if prefix_net.version != critical_net.version:
+                continue # Skip comparison if versions don't match
+            # ------------------------------------
+
+            # Check if this is a more specific announcement based on config
+            more_specific_config = app_settings.get("security_analysis", {}).get("heuristics", {}).get("more_specific", {})
+            if more_specific_config.get("enabled", True):
+                length_diff_threshold = more_specific_config.get("prefix_length_diff", 4)
+                # Compare only if versions match (already checked above)
+                if (prefix_net.subnet_of(critical_net) and
+                    prefix != critical and
+                    prefix_net.prefixlen > critical_net.prefixlen + length_diff_threshold):
+
+                    reasons.append(f"CRITICAL: Suspicious more-specific announcement "
+                                   f"(>{critical_net.prefixlen + length_diff_threshold}) "
+                                   f"of critical prefix: {prefix} (parent: {critical})")
+    except Exception as e:
+        logger.warning(f"Error during more-specific check for {prefix}: {e}")
+
     # Check if origin is a known problematic AS
     if origin_as in KNOWN_BAD_ACTORS:
         reasons.append(f"CRITICAL: Origin AS{origin_as} is a known problematic entity")
-    
+
     return len(reasons) > 0, reasons
 
-def check_route_leak(prefix: str, as_path: str, peer_asn: str) -> Tuple[bool, List[str]]:
+def check_route_leak(prefix: str, as_path: str, peer_asn: str,
+                     app_settings: Dict = APP_SETTINGS) -> Tuple[bool, List[str]]: # Pass settings
     """
     Check for potential route leaks using valley-free path validation
     based on loaded AS relationship data.
@@ -332,9 +349,12 @@ def check_route_leak(prefix: str, as_path: str, peer_asn: str) -> Tuple[bool, Li
 
         # --- Other existing checks ---
 
-        # Check for long AS paths which could indicate a leak
-        if len(asns) > 20: # Increased threshold slightly
-            reasons.append(f"Suspiciously long AS path ({len(asns)} hops)")
+        # Check for long AS paths based on config
+        long_path_config = app_settings.get("security_analysis", {}).get("heuristics", {}).get("long_path", {})
+        if long_path_config.get("enabled", True):
+            threshold = long_path_config.get("threshold", 30)
+            if len(asns) > threshold:
+                reasons.append(f"Suspiciously long AS path ({len(asns)} hops, threshold: {threshold})")
 
         # Check for paths containing private ASNs
         private_asns = []
@@ -361,20 +381,20 @@ class RPKIValidationResult:
 
 class RPKIValidator:
     """RPKI validation using RIPE Validator API."""
-    
+
     def __init__(self):
         self.validator_url = "https://stat.ripe.net/data/rpki-validation/data.json"
         self.cache = {}  # Simple cache for validation results
         self.cache_duration = timedelta(hours=1)
-    
+
     def validate(self, prefix: str, origin_as: int) -> RPKIValidationResult:
         """
         Validate a BGP announcement against RPKI data.
-        
+
         Args:
             prefix: IP prefix in CIDR notation
             origin_as: ASN originating the prefix
-            
+
         Returns:
             RPKIValidationResult with validation state and details
         """
@@ -385,7 +405,7 @@ class RPKIValidator:
                 result, timestamp = self.cache[cache_key]
                 if datetime.now() - timestamp < self.cache_duration:
                     return result
-            
+
             # Query RIPE validator
             params = {
                 "prefix": prefix,
@@ -394,7 +414,7 @@ class RPKIValidator:
             response = requests.get(self.validator_url, params=params, timeout=5)
             response.raise_for_status()
             data = response.json()
-            
+
             # Parse validation result from RIPEstat API
             api_data = data.get("data", {}) # RIPEstat nests results under 'data'
             state_raw = api_data.get("status", "unknown").upper()
@@ -413,11 +433,11 @@ class RPKIValidator:
                 reason=reason,
                 roa_prefixes=None # This API doesn't provide ROA details in the same way
             )
-            
+
             # Cache the result
             self.cache[cache_key] = (result, datetime.now())
             return result
-            
+
         except Exception as e:
             logger.error(f"RPKI validation error: {e}")
             return RPKIValidationResult(state="UNKNOWN", reason=str(e))
@@ -428,40 +448,41 @@ rpki_validator = RPKIValidator()
 def check_rpki_validity(prefix: str, origin_as: Optional[int]) -> Tuple[bool, List[str]]:
     """
     Check if the route announcement is invalid according to RPKI.
-    
+
     Args:
         prefix: IP prefix in CIDR notation
         origin_as: ASN originating the prefix
-        
+
     Returns:
         Tuple of (is_invalid, list of reasons)
     """
     if not origin_as:
         return False, []
-        
+
     result = rpki_validator.validate(prefix, origin_as)
-    
+
     if result.state == "INVALID":
-        reasons = [f"RPKI Invalid: {result.reason}"]
-        # No ROA details available from this specific API endpoint to add here
+        # Clarify the "None" reason if present
+        reason_text = result.reason if result.reason else "Reason unspecified by API"
+        reasons = [f"RPKI Invalid: {reason_text}"]
         return True, reasons
-        
+
     return False, []
 
 class SecurityAlertLogger:
     """Handles logging of security alerts to both database and CSV."""
-    
+
     def __init__(self, data_dir="data"):
         self.data_dir = Path(data_dir) / "security_alerts"
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.current_file = None
         self._init_csv()
-        
+
     def _init_csv(self):
         """Initialize CSV file for current day."""
         current_date = datetime.now().strftime("%Y-%m-%d")
         self.current_file = self.data_dir / f"security_alerts_{current_date}.csv"
-        
+
         # Create new file with headers if doesn't exist
         if not self.current_file.exists():
             with open(self.current_file, 'w', newline='') as csvfile:
@@ -470,173 +491,211 @@ class SecurityAlertLogger:
                     'Timestamp', 'Severity', 'Prefix', 'AS Path',
                     'Peer ASN', 'Reasons', 'Critical Prefix' # Removed 'UK Telecom' header
                 ])
-    
+
     def log_alert(self, alert, db_manager=None):
-        """Log alert to both CSV and database if available."""
-        # Always log to CSV first as fallback
+        """Log alert using standard logging, and optionally to CSV/DB."""
+
+        # --- Log using standard Python logging ---
+        severity = alert.get('severity', 'UNKNOWN').upper()
+        # Prepare structured data for logging
+        log_extra = {
+            'alert_prefix': alert.get('prefix', 'N/A'),
+            'alert_as_path': alert.get('as_path', 'N/A'),
+            'alert_peer_asn': alert.get('peer_asn', 'N/A'),
+            'alert_reasons': '; '.join(alert.get('reasons', [])),
+            'alert_critical': alert.get('is_critical_prefix', False),
+            'alert_severity': severity
+        }
+        log_message = (
+            f"SecurityAlert [{severity}]: Prefix={log_extra['alert_prefix']}, "
+            f"ASPath={log_extra['alert_as_path']}, Peer={log_extra['alert_peer_asn']}, "
+            f"Reasons='{log_extra['alert_reasons']}', Critical={log_extra['alert_critical']}"
+        )
+
+        if severity == "HIGH":
+            logger.error(log_message, extra=log_extra) # Pass structured data
+        elif severity == "MEDIUM":
+            logger.warning(log_message, extra=log_extra) # Pass structured data
+        else: # LOW or UNKNOWN
+            logger.info(log_message, extra=log_extra) # Pass structured data
+        # -----------------------------------------
+
+        # --- Existing CSV logging (optional fallback/backup) ---
         try:
             self._log_to_csv(alert)
         except Exception as e:
-            logging.error(f"Failed to log alert to CSV: {e}")
-        
-        # Try to log to database if available
+            logger.error(f"Failed to log alert to CSV backup: {e}")
+        # -------------------------------------------------------
+
+        # --- Existing DB logging (optional) ---
         if db_manager:
             try:
                 db_manager.store_security_alert(alert)
             except Exception as e:
-                logging.error(f"Failed to log alert to database: {e}")
-    
+                logger.error(f"Failed to log alert to database: {e}")
+        # --------------------------------------
+
     def _log_to_csv(self, alert):
         """Log alert to CSV file."""
         # Check if we need to rotate to new day's file
         current_date = datetime.now().strftime("%Y-%m-%d")
         expected_file = self.data_dir / f"security_alerts_{current_date}.csv"
-        
+
         if expected_file != self.current_file:
             self.current_file = expected_file
             self._init_csv()
-        
+
         # Write alert to CSV
         with open(self.current_file, 'a', newline='') as csvfile:
             writer = csv.writer(csvfile)
             writer.writerow([
-                alert['timestamp'].isoformat() if isinstance(alert['timestamp'], datetime) else alert['timestamp'],
-                alert['severity'],
-                alert['prefix'],
-                alert['as_path'],
-                alert['peer_asn'],
-                ';'.join(alert['reasons']),
-                'Yes' if alert['is_critical_prefix'] else 'No' # Removed 'involves_uk_telecom' value
+                alert.get('timestamp', datetime.now()).isoformat(),
+                alert.get('severity', 'LOW'),
+                alert.get('prefix', 'N/A'),
+                alert.get('as_path', 'N/A'),
+                alert.get('peer_asn', 'N/A'),
+                "; ".join(alert.get('reasons', [])),
+                'Yes' if alert.get('is_critical_prefix', False) else 'No',
+                # Removed UK Telecom field
             ])
 
-def check_suspicious_patterns(timestamp, prefix, as_path, peer_asn, prefix_history, db_manager):
+
+def check_suspicious_patterns(timestamp, prefix, as_path, peer_asn, previous_origin_as, db_manager,
+                              app_settings: Dict = APP_SETTINGS): # Pass settings
     """
-    Enhanced check for suspicious patterns in BGP updates.
-    
-    Parameters:
-    - timestamp: When the update was received
-    - prefix: IP prefix 
-    - as_path: AS path as comma-separated string
-    - peer_asn: ASN of the BGP peer
-    - prefix_history: History of previous updates
-    - db_manager: Neo4j database manager instance
-    
+    Check BGP update for various suspicious patterns.
+
+    Args:
+        timestamp: Timestamp of the update.
+        prefix: Announced prefix.
+        as_path: AS path string.
+        peer_asn: ASN of the BGP peer.
+        previous_origin_as: Previously seen origin AS for this prefix (from cache/state).
+        db_manager: Instance of BGPDatabaseManager (optional).
+        app_settings: Dictionary containing application settings (heuristics thresholds).
+
     Returns:
-    - None if no issues detected
-    - Dict with alert details if suspicious
+        Dictionary representing the alert if suspicious, otherwise None.
     """
-    if not prefix:
-        return None
-        
-    suspicious = False
-    reasons = []
-    severity = "LOW"
-    
-    # Extract origin AS from path
-    origin_as = get_origin_as(as_path)
-    
-    # 1. Check if this is a critical prefix (using the static list)
+    all_reasons = []
+    alert_severity = "LOW" # Default severity
     is_critical = is_critical_prefix(prefix)
-    # Get countries involved in the path (dynamic lookup)
-    path_countries = get_path_countries(as_path)
 
-    # Set initial severity based on prefix criticality
-    if is_critical:
-        severity = "HIGH"
-    # Note: Removed severity adjustment based on UK involvement.
-    # Could add logic here based on path_countries if needed later.
-    
-    # 2. Check for AS path prepending
-    if check_path_prepending(as_path):
-        reasons.append(f"Excessive AS path prepending detected")
-    
-    # 3. Check for unusual transit relationships
-    unusual_transit, transit_reasons = check_unusual_transit(as_path)
-    if unusual_transit:
-        reasons.extend(transit_reasons)
-        if severity == "LOW":
-            severity = "MEDIUM"
-    
-    # 4. Check for potential hijacking
-    possible_hijack, hijack_reasons = check_possible_hijack(
-        prefix, origin_as, prefix_history
-    )
-    if possible_hijack:
-        reasons.extend(hijack_reasons)
-        severity = "HIGH"  # Upgrade to high severity
-    
-    # 5. Check for route leaks
-    route_leak, leak_reasons = check_route_leak(prefix, as_path, peer_asn)
-    if route_leak:
-        reasons.extend(leak_reasons)
-        if severity == "LOW":
-            severity = "MEDIUM"
-    
-    # 6. Check for RPKI validity
-    rpki_invalid, rpki_reasons = check_rpki_validity(prefix, origin_as)
-    if rpki_invalid:
-        reasons.extend(rpki_reasons)
-        severity = "HIGH"  # Invalid RPKI is serious
-    
-    # If any suspicious patterns were detected
-    if reasons:
-        suspicious = True
-        
-        # Create alert record and store in database
-        alert = {
-            'timestamp': timestamp,
-            'prefix': prefix,
-            'as_path': as_path,
-            'origin_as': origin_as,
-            'peer_asn': peer_asn,
-            'reasons': reasons,
-            'severity': severity,
-            'is_critical_prefix': is_critical,
-            # 'involves_uk_telecom': involves_uk # Removed field
-            'path_countries': list(path_countries) # Optionally add list of countries found
-        }
-        
-        # Log the alert
-        logger.warning(f"BGP Security Alert ({severity}):")
-        logger.warning(f"  Prefix: {prefix}")
-        logger.warning(f"  AS Path: {as_path}")
-        for reason in reasons:
-            logger.warning(f"  - {reason}")
-        
-        # Mark update as suspicious in database
-        if db_manager:
-            update_id = f"{timestamp.isoformat()}_{prefix}"
-            db_manager.mark_suspicious_update(update_id, reasons)
-        
-        return alert
-    
-    return None
+    # Load heuristic configs
+    heuristics_config = app_settings.get("security_analysis", {}).get("heuristics", {})
+    long_path_config = heuristics_config.get("long_path", {})
+    prepending_config = heuristics_config.get("prepending", {})
+    more_specific_config = heuristics_config.get("more_specific", {})
 
-# Function to add a critical UK prefix to monitoring
+    # 1. Extract Origin AS
+    origin_as = get_origin_as(as_path)
+    if not origin_as:
+        # Cannot perform origin-based checks without an origin AS
+        # Might still perform other checks like RPKI if applicable based on prefix only?
+        # For now, return if no origin found in path
+         # logger.debug(f"No origin AS found in path: {as_path} for prefix {prefix}")
+         return None # Or potentially log a low-severity path format issue
+
+    # 2. Check for Hijacks (Origin Change, More Specifics, Bad Actors)
+    # Pass app_settings to check_possible_hijack
+    is_hijack, hijack_reasons = check_possible_hijack(prefix, origin_as, previous_origin_as, app_settings)
+    if is_hijack:
+        # Origin changes or bad actors are typically high severity
+        # More-specific might be medium by default (configurable)
+        current_severity = "HIGH"
+        if any("more-specific" in r.lower() for r in hijack_reasons):
+             current_severity = more_specific_config.get("severity", "MEDIUM") # Use configured severity
+        alert_severity = max(alert_severity, current_severity, key=lambda s: {"LOW": 0, "MEDIUM": 1, "HIGH": 2}.get(s, 0))
+        all_reasons.extend(hijack_reasons)
+
+    # 3. Check for Route Leaks (Valley Free, Long Path, Private ASN)
+    # Pass app_settings to check_route_leak
+    is_leak, leak_reasons = check_route_leak(prefix, as_path, peer_asn, app_settings)
+    if is_leak:
+        # Leaks are often medium severity, long paths might be lower
+        current_severity = "MEDIUM"
+        if any("long AS path" in r.lower() for r in leak_reasons) and not any("valley violation" in r.lower() for r in leak_reasons):
+             current_severity = long_path_config.get("severity", "LOW") # Use configured severity for long path
+        alert_severity = max(alert_severity, current_severity, key=lambda s: {"LOW": 0, "MEDIUM": 1, "HIGH": 2}.get(s, 0))
+        all_reasons.extend(leak_reasons)
+
+    # 4. Check RPKI Validity
+    is_rpki_invalid, rpki_reasons = check_rpki_validity(prefix, origin_as)
+    if is_rpki_invalid:
+        alert_severity = max(alert_severity, "HIGH", key=lambda s: {"LOW": 0, "MEDIUM": 1, "HIGH": 2}.get(s, 0)) # RPKI Invalid is always HIGH
+        all_reasons.extend(rpki_reasons)
+
+    # 5. Check Path Prepending
+    is_prepending, prepending_reason = check_path_prepending(as_path)
+    if is_prepending:
+        alert_severity = max(alert_severity, prepending_config.get("severity", "LOW"), key=lambda s: {"LOW": 0, "MEDIUM": 1, "HIGH": 2}.get(s, 0))
+        all_reasons.append(prepending_reason)
+
+    # 6. Check Unusual Transit / Bad Actors in Path
+    is_unusual_transit, transit_reasons = check_unusual_transit(as_path)
+    if is_unusual_transit:
+        # Bad actor in transit path is high severity
+        alert_severity = max(alert_severity, "HIGH", key=lambda s: {"LOW": 0, "MEDIUM": 1, "HIGH": 2}.get(s, 0))
+        all_reasons.extend(transit_reasons)
+
+    # Combine reasons and determine overall severity (already done via max())
+
+    if not all_reasons:
+        return None # No suspicious patterns found
+
+    # Create alert dictionary using the determined alert_severity
+    alert = {
+        'timestamp': timestamp, # Use the determined overall severity
+        'prefix': prefix,
+        'severity': alert_severity,
+        'as_path': as_path,
+        'peer_asn': peer_asn,
+        'origin_as': origin_as, # Add origin AS to alert context
+        'reasons': all_reasons, # Use the determined criticality
+        'previous_origin_as': previous_origin_as, # Add previous origin for context
+        'is_critical_prefix': is_critical
+        # Removed UK Telecom field
+    }
+    return alert
+
+
 def add_critical_prefix(prefix: str) -> bool:
-    """Add a critical prefix to monitoring."""
-    global UK_CRITICAL_PREFIXES
-    
+    """Add a prefix to the critical list and save config."""
     try:
-        # Validate it's a proper prefix
+        # Validate prefix format
         ipaddress.ip_network(prefix)
-        UK_CRITICAL_PREFIXES.add(prefix)
-        save_security_config()
-        return True
+        if prefix not in UK_CRITICAL_PREFIXES:
+            UK_CRITICAL_PREFIXES.add(prefix)
+            save_security_config()
+            logger.info(f"Added critical prefix: {prefix}")
+            return True
+        else:
+            logger.info(f"Prefix {prefix} already in critical list.")
+            return False
+    except ValueError:
+        logger.error(f"Invalid prefix format: {prefix}")
+        return False
     except Exception as e:
-        logger.error(f"Invalid prefix format: {e}")
+        logger.error(f"Error adding critical prefix {prefix}: {e}")
         return False
 
-# Removed add_uk_telecom_asn function
-# Function to add a known bad actor ASN
+
 def add_bad_actor_asn(asn: int) -> bool:
-    """Add a known problematic ASN to monitoring."""
-    global KNOWN_BAD_ACTORS
-    
+    """Add an ASN to the known bad actors list and save config."""
     try:
-        KNOWN_BAD_ACTORS.add(int(asn))
-        save_security_config()
-        return True
+        if not isinstance(asn, int) or asn <= 0:
+             raise ValueError("Invalid ASN")
+        if asn not in KNOWN_BAD_ACTORS:
+            KNOWN_BAD_ACTORS.add(asn)
+            save_security_config()
+            logger.info(f"Added known bad actor ASN: {asn}")
+            return True
+        else:
+            logger.info(f"ASN {asn} already in known bad actors list.")
+            return False
+    except ValueError:
+        logger.error(f"Invalid ASN format: {asn}")
+        return False
     except Exception as e:
-        logger.error(f"Invalid ASN format: {e}")
+        logger.error(f"Error adding bad actor ASN {asn}: {e}")
         return False

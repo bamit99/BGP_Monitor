@@ -1,73 +1,69 @@
-# Project Summary: BGP_Monitor
+# Project Summary (Based on Reviewed Files)
 
-## Root Directory (d:/ClaudeProjects/BGP_Monitor)
+## README.md
+- **Purpose**: Project overview, features, installation instructions, configuration details (database, security, GUI, logging), usage guide, project structure, dependencies, and error handling information. Mentions UI and file-based config for logging/Syslog.
 
-*   `.gitattributes`: Git attributes file.
-*   `.gitignore`: Specifies intentionally untracked files that Git should ignore.
-*   `bgp_collector.py`: Python script, likely related to collecting BGP data.
-*   `IMPROVEMENT_TRACKER.md`: Markdown file for tracking project improvements.
-*   `LICENSE`: Project license file.
-*   `main.py`: Main Python script, likely the entry point of the application.
-*   `project_summary.txt`: This file, summarizing the project structure.
-*   `README.md`: Project description, setup, and usage instructions.
-*   `requirements.txt`: Lists Python package dependencies for the project.
-*   `security_demo.py`: Python script, possibly demonstrating security features or vulnerabilities.
-*   `test_config.py`: Python script for testing configuration aspects.
-*   `test_neo4j.py`: Python script for testing Neo4j database interactions.
-*   `test_ui_config.py`: Python script for testing UI configuration.
+## main.py
+- **Purpose**: Main entry point. Sets up logging (including Syslog via `app_settings.json` and JSON formatter), handles signals, launches GUI.
 
-## cache/
+## gui/main_window.py
+- **Purpose**: Defines the `BGPMonitorGUI` class, the main graphical user interface.
+- **Responsibilities**:
+    - Builds the UI layout (control panel, log display, security alerts panel).
+    - Handles user interactions (region/collector selection, AS filtering, button clicks).
+    - Provides UI dialogs for DB and Syslog configuration (`app_settings.json`).
+    - Manages application state (monitoring status, selected filters).
+    - **Maintains in-memory cache (`prefix_origin_cache`) for tracking last seen origin AS per prefix.**
+    - Loads/saves GUI settings (`gui_settings.json`) and App settings (`app_settings.json`).
+    - Initiates and controls the BGP monitoring process (`src/bgp_monitor.py`) in a separate thread.
+    - Displays BGP updates and security alerts.
+    - Calls `utils/security_analyzer.py` (`check_suspicious_patterns`) with current and previous origin AS for alert generation.
 
-*   `as_cache.json`: JSON file, likely caching Autonomous System (AS) information.
+## src/bgp_monitor.py
+- **Purpose**: Defines the `BGPMonitor` class for handling the live BGP data stream.
+- **Responsibilities**:
+    - Connects to the RIPE RIS WebSocket endpoint.
+    - Subscribes to specified BGP collectors.
+    - Receives BGP messages (JSON format).
+    - Manages the WebSocket connection (keepalives, error handling).
+    - Passes received messages to a callback function (`BGPMonitorGUI.process_update`) for processing.
+    - Optionally initializes `utils/db_manager.py`.
 
-## config/
+## utils/security_analyzer.py
+- **Purpose**: Performs security analysis on BGP updates using configurable heuristics.
+- **Responsibilities**:
+    - Loads security lists (critical prefixes, bad actors) from `config/security_config.json`.
+    - **Loads heuristic settings (thresholds, severities, enable flags for long_path, prepending, more_specific) from `app_settings.json`.**
+    - **Checks for BGP hijacks using previous origin AS data (passed from GUI cache).**
+    - Detects potential route leaks (valley-free path validation using AS relationship data).
+    - Analyzes AS paths (prepending, unusual transit) based on configured thresholds.
+    - Identifies impacts on critical prefixes.
+    - Validates RPKI status using RIPEstat API (`RPKIValidator` class), clarifying "None" reasons.
+    - Logs detected security alerts (`SecurityAlertLogger` class) using standard Python logging (with structured `extra` data) and optionally to CSV/DB.
+    - Uses `utils/bgp_utils.py` for AS relationships and `utils/as_lookup.py` for AS details.
 
-*   `collectors.py`: Python script for configuring BGP collectors.
-*   `database_config_template.ini`: Template for database configuration (INI format).
-*   `database_config.py`: Python script for handling database configuration.
-*   `db_config.json`: Database configuration file (JSON format).
-*   `db_config.json.template`: Template for `db_config.json`.
-*   `gui_settings.json`: Settings for the graphical user interface (JSON format).
-*   `security_config.json`: Security-related configuration (JSON format).
-*   `user_settings.json`: User-specific settings (JSON format).
+## utils/db_manager.py
+- **Purpose**: Defines the `BGPDatabaseManager` class to manage Neo4j database operations.
+- **Responsibilities**:
+    - Establishes and manages the Neo4j database connection.
+    - Initializes the graph schema.
+    - Stores BGP updates and security alerts.
+    - Provides methods to query the database.
+    - Exports alerts from the database to CSV.
 
-## gui/
+## utils/config_manager.py
+- **Purpose**: Manages loading/saving configuration.
+- **Responsibilities**:
+    - Handles Neo4j config (`db_config.json`, `database_config.ini`).
+    - Handles GUI state (`gui_settings.json`).
+    - **Handles application settings (`app_settings.json`), including logging/Syslog and security heuristic configurations.** Uses deep merge for loading.
 
-*   `config_dialog.py`: Python script for a configuration dialog window in the GUI.
-*   `main_window.py`: Python script defining the main window of the GUI.
+## utils/bgp_utils.py
+- **Purpose**: Utility functions for BGP data processing, including AS relationship loading.
+- **Responsibilities**:
+    - Validates ASNs, prefixes. Formats timestamps, communities.
+    - **Loads AS relationship data from CAIDA file (`data/as_relationships.txt.bz2`) for route leak analysis.** Includes comments explaining the source requirement.
+    - Provides `get_as_relationship` function.
 
-## sample_data/
-
-*   `reports/`: Directory likely containing sample report files. (Contents not listed)
-
-## src/
-
-*   `bgp_monitor.py`: Core BGP monitoring logic (Python script).
-*   `connection_manager.py`: Python script for managing connections (e.g., to collectors, database).
-
-## tests/
-
-*   `query_suspicious.py`: Python script for testing queries related to suspicious BGP activity.
-*   `test_neo4j_connection.py`: Python script for testing the Neo4j database connection.
-*   `test_security_analyzer.py`: Python script for testing the security analysis component.
-*   `test_websocket.py`: Python script for testing WebSocket functionality.
-*   `validate_neo4j_data.py`: Python script for validating data stored in Neo4j.
-*   `verify_live_updates.py`: Python script for verifying live data updates.
-*   `test_ui/`: Subdirectory for UI-specific tests.
-    *   `app.py`: Python script, possibly a test Flask/Dash app for the UI.
-    *   `requirements.txt`: Dependencies specific to the UI tests.
-    *   `templates/`: Directory for HTML templates used in UI tests. (Contents not listed)
-
-## utils/
-
-*   `analysis.py`: Python script containing data analysis functions.
-*   `as_lookup.py`: Python script for looking up Autonomous System information.
-*   `bgp_utils.py`: Utility functions related to BGP processing (Python script).
-*   `config_manager.py`: Python script for managing application configuration.
-*   `data_manager.py`: Python script for handling data loading, saving, or processing.
-*   `db_manager.py`: Python script for managing database interactions.
-*   `security_analyzer.py`: Python script for analyzing BGP data for security threats.
-*   `ui_config_handler.py`: Python script for handling UI configuration persistence or logic.
-
----
-*Note: `.git` directory, `__pycache__` directories, and contents of some subdirectories are omitted for brevity.*
+## IMPROVEMENT_PLAN.md
+- **Purpose**: Documents the analysis of security features and the plan for improvements (state management, heuristics, formatting, config).

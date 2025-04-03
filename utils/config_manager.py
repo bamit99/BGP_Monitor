@@ -7,6 +7,7 @@ import json
 import os
 import logging
 from pathlib import Path
+import logging.handlers # Import SysLogHandler
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -42,8 +43,11 @@ class ConfigManager:
             path / 'config' / 'db_config.json' for path in self.alt_paths
         ]
         
-        # GUI settings path
-        self.settings_path = self.config_dir / 'gui_settings.json'
+        # GUI settings path (specific to UI state)
+        self.gui_settings_path = self.config_dir / 'gui_settings.json'
+
+        # General application settings path (for logging, etc.)
+        self.app_settings_path = self.config_dir / 'app_settings.json'
     
     def load_neo4j_config(self):
         """
@@ -68,20 +72,20 @@ class ConfigManager:
             'password': 'password'
         }
     
-    def load_settings(self):
+    def load_gui_settings(self):
         """
-        Load GUI settings from configuration file.
-        Returns default settings if file not found.
+        Load GUI settings from the specific GUI settings file.
+        Returns default GUI settings if file not found.
         """
-        # Try each path for settings
-        if self.settings_path.exists():
+        # Load from the dedicated GUI settings path
+        if self.gui_settings_path.exists():
             try:
-                with open(self.settings_path, 'r') as f:
+                with open(self.gui_settings_path, 'r') as f:
                     settings = json.load(f)
-                logger.info(f"Loaded GUI settings from {self.settings_path}")
+                logger.info(f"Loaded GUI settings from {self.gui_settings_path}")
                 return settings
             except Exception as e:
-                logger.error(f"Error loading GUI settings from {self.settings_path}: {e}")
+                logger.error(f"Error loading GUI settings from {self.gui_settings_path}: {e}")
         
         # Return default settings if no file found
         default_settings = {
@@ -93,26 +97,26 @@ class ConfigManager:
         logger.info("Using default GUI settings")
         return default_settings
     
-    def save_settings(self, settings):
+    def save_gui_settings(self, settings):
         """
-        Save GUI settings to configuration file.
-        
+        Save GUI settings to the specific GUI settings file.
+
         Args:
             settings: Dictionary with GUI settings
-            
+
         Returns:
             bool: Success or failure
         """
         try:
-            # Write to file
-            with open(self.settings_path, 'w') as f:
+            # Write to the dedicated GUI settings file
+            with open(self.gui_settings_path, 'w') as f:
                 json.dump(settings, f, indent=4)
-                
-            logger.info(f"Saved GUI settings to {self.settings_path}")
+
+            logger.info(f"Saved GUI settings to {self.gui_settings_path}")
             return True
-            
+
         except Exception as e:
-            logger.error(f"Failed to save GUI settings to {self.settings_path}: {e}")
+            logger.error(f"Failed to save GUI settings to {self.gui_settings_path}: {e}")
             return False
     
     def _load_from_ini(self):
@@ -230,6 +234,86 @@ class ConfigManager:
             
         except Exception as e:
             logger.error(f"Failed to save JSON configuration to {self.json_config_path}: {e}")
+            return False
+
+    def load_app_settings(self):
+        """
+        Load general application settings (e.g., logging) from config file.
+        Returns default settings if file not found or invalid.
+        """
+        defaults = {
+            "logging": {
+                "level": "INFO",
+                "syslog": {
+                    "enabled": False,
+                    "host": "localhost",
+                    "port": 514,
+                    "protocol": "UDP" # UDP or TCP
+                }
+            },
+            "security_analysis": {
+                "heuristics": {
+                    "long_path": {
+                        "enabled": True,
+                        "threshold": 30, # Default increased from 20
+                        "severity": "LOW"
+                    },
+                    "prepending": {
+                        "enabled": True,
+                        "threshold": 5, # Default increased from 3
+                        "severity": "LOW"
+                    },
+                    "more_specific": {
+                        "enabled": True,
+                        "prefix_length_diff": 4, # Default increased from 3
+                        "severity": "MEDIUM" # Keep medium for critical prefix specifics
+                    }
+                }
+            }
+        }
+
+        if self.app_settings_path.exists():
+            try:
+                with open(self.app_settings_path, 'r') as f:
+                    settings = json.load(f)
+                logger.info(f"Loaded application settings from {self.app_settings_path}")
+                # Deep merge strategy to handle nested dictionaries like logging/security
+                def deep_update(source, overrides):
+                    for key, value in overrides.items():
+                        if isinstance(value, dict) and key in source and isinstance(source[key], dict):
+                            deep_update(source[key], value)
+                        else:
+                            source[key] = value
+                    return source
+
+                defaults = deep_update(defaults, settings)
+                return defaults
+            except Exception as e:
+                logger.error(f"Error loading application settings from {self.app_settings_path}: {e}. Using defaults.")
+                return defaults
+        else:
+            logger.info(f"Application settings file not found ({self.app_settings_path}). Using default settings.")
+            # Save defaults if file doesn't exist
+            self.save_app_settings(defaults)
+            return defaults
+
+    def save_app_settings(self, settings):
+        """
+        Save general application settings to configuration file.
+
+        Args:
+            settings: Dictionary with application settings
+
+        Returns:
+            bool: Success or failure
+        """
+        try:
+            with open(self.app_settings_path, 'w') as f:
+                json.dump(settings, f, indent=4)
+            logger.info(f"Saved application settings to {self.app_settings_path}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to save application settings to {self.app_settings_path}: {e}")
             return False
 
 # Create a shared instance

@@ -1,0 +1,11 @@
+{
+    "logging": {
+        "level": "INFO",
+        "syslog": {
+            "enabled": false,
+            "host": "localhost",
+            "port": 514,
+            "protocol": "UDP"
+        }
+    }
+}

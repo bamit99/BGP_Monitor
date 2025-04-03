@@ -58,8 +58,15 @@ C2P = 1
 S2S = 2
 UNKNOWN = 99
 
-# Placeholder for the path to the relationship file
-# This should ideally be configurable
+# --- AS Relationship Data Source ---
+# The following functions rely on AS relationship data, typically sourced from CAIDA.
+# Download the latest 'AS Relationships' dataset file (e.g., YYYYMMDD.as-rel.txt.bz2)
+# from https://publicdata.caida.org/datasets/as-relationships/serial-1/
+# and place it in the 'data/' directory, renaming it to 'as_relationships.txt.bz2'.
+# Without this file, route leak detection based on valley-free paths will be limited.
+# ---
+
+# Default path for the relationship file
 DEFAULT_AS_REL_FILE_PATH = Path(__file__).parent.parent / "data" / "as_relationships.txt.bz2"
 
 def load_as_relationships(filepath=DEFAULT_AS_REL_FILE_PATH):

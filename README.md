@@ -95,6 +95,30 @@ The application includes advanced security monitoring features:
 
 The application saves GUI settings such as selected region, collectors, and AS filters. These settings are stored in `config/gui_settings.json` and are loaded automatically when the application starts.
 
+### Logging Configuration
+
+The application's logging behavior, including Syslog forwarding, can be configured via the "Syslog Settings" button in the main UI or by directly editing `config/app_settings.json`. If this file doesn't exist, it will be created with default values upon first run.
+
+```json
+{
+  "logging": {
+    "level": "INFO",
+    "syslog": {
+      "enabled": false,
+      "host": "localhost",
+      "port": 514,
+      "protocol": "UDP"
+    }
+  }
+}
+```
+
+- **level**: Minimum logging level (e.g., "DEBUG", "INFO", "WARNING", "ERROR").
+- **syslog.enabled**: Set to `true` to enable Syslog forwarding.
+- **syslog.host**: IP address or hostname of the Syslog server.
+- **syslog.port**: Port number for the Syslog server (e.g., 514 for UDP, 6514 for TCP).
+- **syslog.protocol**: Protocol to use ("UDP" or "TCP").
+
 ## Usage
 
 1. **Select a Region**: Choose a geographic region from the dropdown menu.

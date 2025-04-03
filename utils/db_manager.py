@@ -302,33 +302,51 @@ class BGPDatabaseManager:
         """
         try:
             with self.driver.session() as session:
-                # Create alert node
+                # Step 1: Create/Merge the SecurityAlert node unconditionally
+                alert_id = f"{alert['timestamp'].isoformat()}_{alert['prefix']}"
                 session.run("""
-                    MERGE (a:SecurityAlert {
-                        alert_id: $alert_id,
-                        timestamp: $timestamp,
-                        severity: $severity,
-                        prefix: $prefix,
-                        as_path: $as_path,
-                        peer_asn: $peer_asn,
-                        reasons: $reasons,
-                        is_critical_prefix: $is_critical
-                    })
-                    WITH a
-                    MATCH (u:BGPUpdate {update_id: $update_id})
-                    MERGE (a)-[:TRIGGERED_BY]->(u)
+                    MERGE (a:SecurityAlert {alert_id: $alert_id})
+                    ON CREATE SET
+                        a.timestamp = $timestamp,
+                        a.severity = $severity,
+                        a.prefix = $prefix,
+                        a.as_path = $as_path,
+                        a.peer_asn = $peer_asn,
+                        a.reasons = $reasons,
+                        a.is_critical_prefix = $is_critical,
+                        a.origin_as = $origin_as, // Store origin AS if available
+                        a.previous_origin_as = $previous_origin_as // Store previous origin if available
+                    ON MATCH SET
+                        a.timestamp = $timestamp, // Update timestamp on match? Or keep first seen? Decide policy.
+                        a.severity = $severity,   // Update severity if it changes?
+                        a.reasons = $reasons      // Update reasons?
                     """,
-                    alert_id=f"{alert['timestamp'].isoformat()}_{alert['prefix']}",
+                    alert_id=alert_id,
                     timestamp=alert['timestamp'],
                     severity=alert['severity'],
                     prefix=alert['prefix'],
-                    as_path=alert['as_path'],
-                    peer_asn=alert['peer_asn'],
-                    reasons=";".join(alert['reasons']),
-                    is_critical=alert['is_critical_prefix'],
-                    # Parameter removed implicitly by removing from query
-                    update_id=f"{alert['timestamp'].isoformat()}_{alert['prefix']}"
+                    as_path=alert.get('as_path'), # Use get() for optional fields
+                    peer_asn=alert.get('peer_asn'),
+                    reasons=";".join(alert.get('reasons', [])),
+                    is_critical=alert.get('is_critical_prefix', False),
+                    origin_as=alert.get('origin_as'),
+                    previous_origin_as=alert.get('previous_origin_as')
                 )
+
+                # Step 2: Optionally match the BGPUpdate and create the relationship
+                # Use the same ID construction logic as store_bgp_update
+                update_id = alert_id # Assuming alert_id and update_id are constructed the same way
+                session.run("""
+                    MATCH (a:SecurityAlert {alert_id: $alert_id})
+                    MATCH (u:BGPUpdate {update_id: $update_id})
+                    MERGE (a)-[:TRIGGERED_BY]->(u)
+                    """,
+                    alert_id=alert_id,
+                    update_id=update_id
+                )
+                # Note: If the MATCH for BGPUpdate fails, the MERGE relationship won't be created,
+                # but the SecurityAlert node will still exist from Step 1.
+                # We might want to log a warning if the MATCH fails.
                 return True
         except Exception as e:
             logging.error(f"Error storing security alert: {e}")
