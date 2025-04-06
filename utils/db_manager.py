@@ -6,7 +6,7 @@ from datetime import datetime
 
 class BGPDatabaseManager:
     """Manages Neo4j database operations for BGP update data."""
-    
+
     def __init__(self, uri, username, password):
         """Initialize the database manager with connection details."""
         self.driver = GraphDatabase.driver(uri, auth=(username, password))
@@ -16,14 +16,14 @@ class BGPDatabaseManager:
                 result = session.run("RETURN 1 as test")
                 result.single()
             logging.info("Successfully connected to Neo4j database")
-            
+
             # Initialize database schema
             self._init_schema()
-            
+
         except Exception as e:
             logging.error(f"Failed to connect to Neo4j: {e}")
             raise
-            
+
     def _cleanup_duplicates_tx(self, tx):
         """Transaction function to clean up duplicate SecurityAlert nodes."""
         # Find duplicate alert_ids and keep only the node with the minimum internal ID for each
@@ -101,18 +101,18 @@ class BGPDatabaseManager:
             # Log other unexpected exceptions as errors
             logging.error(f"Unexpected error initializing database schema: {e}")
             # Don't raise - schema initialization should not block application startup
-    
+
     def close(self):
         """Close the database connection."""
         if self.driver:
             self.driver.close()
-    
+
     def store_bgp_update(self, timestamp, collector, peer_asn, prefix, as_path=None,
                           next_hop=None, communities=None, update_type="announcement",
                           origin=None, aggregator=None, host=None, id=None, raw_message=None): # Added new params
         """
         Store BGP update in Neo4j database.
-        
+
         Parameters:
         - timestamp: When the update was received
         - collector: RRC collector ID
@@ -130,8 +130,9 @@ class BGPDatabaseManager:
         """
         try:
             with self.driver.session() as session:
+                # Use isoformat() for timestamp consistency in ID
                 update_id = f"{collector}_{timestamp.isoformat()}_{prefix}"
-                
+
                 # Create update record and connect to prefix
                 session.run("""
                     MERGE (u:BGPUpdate {update_id: $update_id})
@@ -153,7 +154,7 @@ class BGPDatabaseManager:
                     MERGE (u)-[:AFFECTS]->(p)
                     """,
                     update_id=update_id,
-                    timestamp=timestamp.isoformat(),
+                    timestamp=timestamp, # Store as datetime object
                     collector=collector,
                     peer_asn=peer_asn,
                     prefix=prefix,
@@ -167,36 +168,38 @@ class BGPDatabaseManager:
                     id=id,
                     raw_message=json.dumps(raw_message) if raw_message else None # Store raw as JSON string
                 )
-                
+
                 # Process AS path relationships if this is an announcement
                 if update_type == "announcement" and as_path:
                     # Split AS path into individual ASNs
                     asns = as_path.split(",")
-                    
+
                     # Create ASN nodes
                     for asn in asns:
-                        session.run("""
-                            MERGE (a:AS {asn: $asn})
-                            """,
-                            asn=asn
-                        )
-                    
+                         if asn.isdigit(): # Ensure it's a valid number before creating node
+                            session.run("""
+                                MERGE (a:AS {asn: toInteger($asn)})
+                                """,
+                                asn=asn
+                            )
+
                     # Create AS path relationships
                     for i in range(len(asns) - 1):
-                        session.run("""
-                            MATCH (a1:AS {asn: $asn1})
-                            WITH a1
-                            MATCH (a2:AS {asn: $asn2})
-                            MERGE (a1)-[:ANNOUNCES_TO]->(a2)
-                            """,
-                            asn1=asns[i],
-                            asn2=asns[i+1]
-                        )
-                    
+                         if asns[i].isdigit() and asns[i+1].isdigit(): # Ensure both are valid numbers
+                            session.run("""
+                                MATCH (a1:AS {asn: toInteger($asn1)})
+                                WITH a1
+                                MATCH (a2:AS {asn: toInteger($asn2)})
+                                MERGE (a1)-[:ANNOUNCES_TO]->(a2)
+                                """,
+                                asn1=asns[i],
+                                asn2=asns[i+1]
+                            )
+
                     # Connect origin AS to prefix if there are any ASNs
-                    if asns:
+                    if asns and asns[-1].isdigit():
                         session.run("""
-                            MATCH (a:AS {asn: $origin_asn})
+                            MATCH (a:AS {asn: toInteger($origin_asn)})
                             WITH a
                             MATCH (p:Prefix {prefix: $prefix})
                             MERGE (a)-[:ORIGINATES]->(p)
@@ -204,7 +207,7 @@ class BGPDatabaseManager:
                             origin_asn=asns[-1],
                             prefix=prefix
                         )
-                
+
                 # Connect update to collector
                 session.run("""
                     MERGE (c:Collector {id: $collector})
@@ -215,12 +218,12 @@ class BGPDatabaseManager:
                     collector=collector,
                     update_id=update_id
                 )
-                
+
             return True
         except Exception as e:
             logging.error(f"Error storing BGP update: {e}")
             return False
-    
+
     def mark_suspicious_update(self, update_id, reasons):
         """Mark a BGP update as suspicious with reasons."""
         try:
@@ -237,7 +240,7 @@ class BGPDatabaseManager:
         except Exception as e:
             logging.error(f"Error marking suspicious update: {e}")
             return False
-    
+
     def get_prefix_history(self, prefix, limit=10):
         """Get recent history for a specific prefix."""
         try:
@@ -251,7 +254,7 @@ class BGPDatabaseManager:
                     prefix=prefix,
                     limit=limit
                 )
-                
+
                 history = []
                 for record in result:
                     history.append({
@@ -264,13 +267,13 @@ class BGPDatabaseManager:
         except Exception as e:
             logging.error(f"Error retrieving prefix history: {e}")
             return []
-    
+
     def get_as_announcements(self, asn, limit=10):
         """Get recent announcements from a specific AS."""
         try:
             with self.driver.session() as session:
                 result = session.run("""
-                    MATCH (a:AS {asn: $asn})-[:ORIGINATES]->(p:Prefix)
+                    MATCH (a:AS {asn: toInteger($asn)})-[:ORIGINATES]->(p:Prefix)
                     MATCH (u:BGPUpdate)-[:AFFECTS]->(p)
                     WHERE u.update_type = 'announcement'
                     RETURN u.timestamp, u.prefix, u.as_path
@@ -280,7 +283,7 @@ class BGPDatabaseManager:
                     asn=asn,
                     limit=limit
                 )
-                
+
                 announcements = []
                 for record in result:
                     announcements.append({
@@ -292,18 +295,19 @@ class BGPDatabaseManager:
         except Exception as e:
             logging.error(f"Error retrieving AS announcements: {e}")
             return []
-    
+
     def store_security_alert(self, alert):
         """
-        Store a security alert in Neo4j.
-        
-        Parameters:
-        - alert: Dictionary containing alert details
+        Store a security alert in Neo4j. Creates the alert node first,
+        then optionally links it to the triggering BGP update.
         """
         try:
             with self.driver.session() as session:
                 # Step 1: Create/Merge the SecurityAlert node unconditionally
-                alert_id = f"{alert['timestamp'].isoformat()}_{alert['prefix']}"
+                # Ensure timestamp is in a compatible format for ID generation
+                ts_str = alert['timestamp'].isoformat() if isinstance(alert['timestamp'], datetime) else str(alert['timestamp'])
+                alert_id = f"{ts_str}_{alert['prefix']}"
+
                 session.run("""
                     MERGE (a:SecurityAlert {alert_id: $alert_id})
                     ON CREATE SET
@@ -322,7 +326,7 @@ class BGPDatabaseManager:
                         a.reasons = $reasons      // Update reasons?
                     """,
                     alert_id=alert_id,
-                    timestamp=alert['timestamp'],
+                    timestamp=alert['timestamp'], # Store original datetime object
                     severity=alert['severity'],
                     prefix=alert['prefix'],
                     as_path=alert.get('as_path'), # Use get() for optional fields
@@ -336,26 +340,30 @@ class BGPDatabaseManager:
                 # Step 2: Optionally match the BGPUpdate and create the relationship
                 # Use the same ID construction logic as store_bgp_update
                 update_id = alert_id # Assuming alert_id and update_id are constructed the same way
-                session.run("""
+                result = session.run("""
                     MATCH (a:SecurityAlert {alert_id: $alert_id})
                     MATCH (u:BGPUpdate {update_id: $update_id})
-                    MERGE (a)-[:TRIGGERED_BY]->(u)
+                    MERGE (a)-[r:TRIGGERED_BY]->(u)
+                    RETURN count(r) as link_count
                     """,
                     alert_id=alert_id,
                     update_id=update_id
                 )
-                # Note: If the MATCH for BGPUpdate fails, the MERGE relationship won't be created,
-                # but the SecurityAlert node will still exist from Step 1.
-                # We might want to log a warning if the MATCH fails.
+                # Check if the link was created or already existed
+                link_summary = result.consume()
+                # This part is tricky as MERGE doesn't directly tell you if it matched or created.
+                # We could potentially log if the BGPUpdate node wasn't found, but that requires another query.
+                # For now, we assume if the query runs without error, the alert node is saved.
+
                 return True
         except Exception as e:
             logging.error(f"Error storing security alert: {e}")
             return False
-            
+
     def get_recent_alerts(self, limit=100, min_severity="LOW"):
         """
         Get recent security alerts from Neo4j.
-        
+
         Parameters:
         - limit: Maximum number of alerts to return
         - min_severity: Minimum severity level ("LOW", "MEDIUM", "HIGH")
@@ -365,8 +373,8 @@ class BGPDatabaseManager:
             "MEDIUM": 1,
             "HIGH": 2
         }
-        min_level = severity_levels.get(min_severity, 0)
-        
+        min_level = severity_levels.get(min_severity.upper(), 0) # Ensure uppercase comparison
+
         try:
             with self.driver.session() as session:
                 result = session.run("""
@@ -383,19 +391,30 @@ class BGPDatabaseManager:
                     min_level=min_level,
                     limit=limit
                 )
-                
+
                 alerts = []
                 for record in result:
-                    alert = record['a']
+                    alert_node = record['a']
+                    # Convert Neo4j DateTime back to Python datetime if needed, or handle isoformat string
+                    timestamp_val = alert_node['timestamp']
+                    if hasattr(timestamp_val, 'to_native'): # Check if it's a Neo4j DateTime object
+                         timestamp_dt = timestamp_val.to_native()
+                    else: # Assume it might be stored as string already (though should be datetime)
+                         try:
+                              timestamp_dt = datetime.fromisoformat(str(timestamp_val))
+                         except:
+                              timestamp_dt = timestamp_val # Fallback
+
                     alerts.append({
-                        'timestamp': alert['timestamp'],
-                        'severity': alert['severity'],
-                        'prefix': alert['prefix'],
-                        'as_path': alert['as_path'],
-                        'peer_asn': alert['peer_asn'],
-                        'reasons': alert['reasons'].split(';'),
-                        'is_critical_prefix': alert['is_critical_prefix'],
-                        # Field removed from dictionary construction
+                        'timestamp': timestamp_dt, # Return as datetime object
+                        'severity': alert_node['severity'],
+                        'prefix': alert_node['prefix'],
+                        'as_path': alert_node.get('as_path'), # Use get for optional fields
+                        'peer_asn': alert_node.get('peer_asn'),
+                        'reasons': alert_node.get('reasons', '').split(';'),
+                        'is_critical_prefix': alert_node.get('is_critical_prefix', False),
+                        'origin_as': alert_node.get('origin_as'),
+                        'previous_origin_as': alert_node.get('previous_origin_as')
                     })
                 return alerts
         except Exception as e:
@@ -405,15 +424,15 @@ class BGPDatabaseManager:
     def export_alerts_to_csv(self, filepath, start_date=None, end_date=None):
         """
         Export security alerts to CSV file.
-        
+
         Parameters:
         - filepath: Path to save the CSV file
         - start_date: Optional start date filter (datetime)
         - end_date: Optional end date filter (datetime)
         """
         import csv
-        from datetime import datetime
-        
+        # from datetime import datetime # Already imported
+
         try:
             with self.driver.session() as session:
                 # Build query with optional date filters
@@ -422,53 +441,64 @@ class BGPDatabaseManager:
                     WHERE 1=1
                 """
                 params = {}
-                
+
                 if start_date:
                     query += " AND a.timestamp >= $start_date"
                     params['start_date'] = start_date
-                    
+
                 if end_date:
                     query += " AND a.timestamp <= $end_date"
                     params['end_date'] = end_date
-                    
+
                 query += """
-                    RETURN 
+                    RETURN
                         a.timestamp as timestamp,
                         a.severity as severity,
                         a.prefix as prefix,
                         a.as_path as as_path,
                         a.peer_asn as peer_asn,
                         a.reasons as reasons,
-                        a.is_critical_prefix as is_critical
+                        a.is_critical_prefix as is_critical,
+                        a.origin_as as origin_as,
+                        a.previous_origin_as as previous_origin_as
                     ORDER BY a.timestamp DESC
                 """
-                
+
                 result = session.run(query, params)
-                
+
                 # Write to CSV
                 with open(filepath, 'w', newline='') as csvfile:
                     writer = csv.writer(csvfile)
                     # Write header
                     writer.writerow([
-                        'Timestamp', 'Severity', 'Prefix', 'AS Path', 
-                        'Peer ASN', 'Reasons', 'Critical Prefix'
+                        'Timestamp', 'Severity', 'Prefix', 'AS Path',
+                        'Peer ASN', 'Reasons', 'Critical Prefix',
+                        'Origin AS', 'Previous Origin AS' # Added new headers
                     ])
-                    
+
                     # Write data
                     for record in result:
-                        writer.writerow([
-                            record['timestamp'].isoformat() if isinstance(record['timestamp'], datetime) else record['timestamp'],
+                         # Handle potential Neo4j DateTime objects
+                         timestamp_val = record['timestamp']
+                         if hasattr(timestamp_val, 'isoformat'):
+                              ts_str = timestamp_val.isoformat()
+                         else:
+                              ts_str = str(timestamp_val)
+
+                         writer.writerow([
+                            ts_str,
                             record['severity'],
                             record['prefix'],
                             record['as_path'],
                             record['peer_asn'],
                             record['reasons'],
                             'Yes' if record['is_critical'] else 'No',
-                            # Removed corresponding value write
+                            record['origin_as'],
+                            record['previous_origin_as']
                         ])
-                
+
                 return True
-                
+
         except Exception as e:
             logging.error(f"Error exporting alerts to CSV: {e}")
             return False

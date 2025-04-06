@@ -1,5 +1,9 @@
 {
     "region": "Europe",
-    "collectors": [],
-    "as_filters": []
+    "collectors": [
+        "rrc01"
+    ],
+    "as_filters": [
+        "AS8220"
+    ]
 }

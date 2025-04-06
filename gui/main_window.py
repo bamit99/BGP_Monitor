@@ -17,7 +17,10 @@ import subprocess
 from pathlib import Path
 from utils.config_manager import config_manager # Use the shared instance
 import logging
-import config.database_config as db_config
+# Import the BGPDatabaseManager class directly from the correct module
+from utils.db_manager import BGPDatabaseManager
+# Keep the import for NEO4J_CONFIG if it's used elsewhere, or remove if not needed
+import config.database_config as db_config_module
 from utils.security_analyzer import SecurityAlertLogger, get_origin_as, check_suspicious_patterns # Import necessary functions
 import time
 
@@ -59,6 +62,8 @@ class BGPMonitorGUI:
         self.data_manager = DataManager("data")
         self.as_lookup = ASLookup()
         self.filter_var = tk.StringVar(value="")
+        self.prefix_origin_cache = {} # Cache for last seen origin AS per prefix
+        self.MAX_PREFIX_CACHE_SIZE = 100000 # Simple size limit for the cache
 
         # Import collectors configuration
         self.get_collectors_by_region = get_collectors_by_region
@@ -80,8 +85,6 @@ class BGPMonitorGUI:
         self.monitor_thread = None
         self.current_data_file = None
         self.connection_manager = None
-        self.prefix_origin_cache = {} # Cache for last seen origin AS per prefix
-        self.MAX_PREFIX_CACHE_SIZE = 100000 # Simple size limit for the cache
 
         # Create the GUI components
         self.create_control_panel()
@@ -240,6 +243,11 @@ class BGPMonitorGUI:
         self.log_text = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, height=20)
         self.log_text.pack(fill="both", expand=True, padx=5, pady=5)
 
+        # --- Define Text Tags for Color Coding ---
+        self.log_text.tag_configure("withdrawal", foreground="blue")
+        self.log_text.tag_configure("alert_trigger", foreground="orange")
+        self.log_text.tag_configure("filtered_as", foreground="green", font=('TkDefaultFont', 9, 'bold')) # Make filtered AS bold green
+
     def create_security_panel(self):
         """Create the security alerts panel."""
         # Create security frame
@@ -350,17 +358,20 @@ class BGPMonitorGUI:
 
     def clear_as_filters(self):
         """Clear all AS filters."""
-        self.filtered_as_numbers.clear()
+        # Note: self.filtered_as_numbers seems unused, the listbox itself holds the state
+        self.as_listbox.delete(0, tk.END)
         self.filter_var.set("")
-        self.update_as_listbox()
+        # self.update_as_listbox() # Not needed as we directly modify listbox
         self.log_message("Cleared all AS filters")
         self.save_gui_settings()  # Save GUI settings
 
     def update_as_listbox(self):
         """Update the AS number listbox with current filters."""
-        self.as_listbox.delete(0, tk.END)  # Clear current items
-        for asn in sorted(self.filtered_as_numbers):
-            self.as_listbox.insert(tk.END, f"AS{asn}")
+        # This method seems redundant now as filters are added/removed directly
+        pass
+        # self.as_listbox.delete(0, tk.END)  # Clear current items
+        # for asn in sorted(self.filtered_as_numbers): # self.filtered_as_numbers is not maintained
+        #     self.as_listbox.insert(tk.END, f"AS{asn}")
 
     def start_monitoring(self):
         """Start BGP monitoring."""
@@ -446,18 +457,74 @@ class BGPMonitorGUI:
         if self.monitor_thread:
             self.bgp_monitor.stop_monitoring()
             # Ensure the monitor loop knows to stop
-            self.bgp_monitor.stop_monitoring()
+            # self.bgp_monitor.stop_monitoring() # Called above already
             self.monitor_thread.join(timeout=5)
             self.monitor_thread = None
 
         # Schedule UI update on main thread
         self.root.after(0, self.update_ui_for_monitoring_stop)
-    def log_message(self, message):
-        """Add message to log in a thread-safe way."""
+
+    def log_message(self, message, line_tags=None):
+        """Add message to log, applying color coding tags."""
         if not isinstance(message, str):
             message = str(message)
-        self.log_text.insert(tk.END, message + "\n")
+
+        # Disable text widget temporarily for bulk operations
+        self.log_text.config(state=tk.NORMAL)
+
+        # Get start index before insertion
+        start_index = self.log_text.index(f"{tk.END}-1c") # Get index of the beginning of the last line
+
+        # Insert the message with primary line tags (e.g., withdrawal, alert_trigger)
+        self.log_text.insert(tk.END, message + "\n", line_tags)
+
+        # Get end index after insertion
+        end_index = self.log_text.index(f"{tk.END}-1c") # Get index of the beginning of the *new* last line
+
+        # Apply filtered AS highlighting only if it's not an alert line
+        # Check if 'alert_trigger' is NOT in the applied tags for the new line
+        current_tags = self.log_text.tag_names(start_index)
+        if "alert_trigger" not in current_tags:
+            active_as_filters_raw = self.as_listbox.get(0, tk.END)
+            # Extract just the number part for searching within the text
+            active_as_filters_nums = set()
+            for f in active_as_filters_raw:
+                if f.startswith("AS"):
+                    num_part = f[2:]
+                    if num_part.isdigit():
+                        active_as_filters_nums.add(num_part)
+                elif f.isdigit(): # Allow filtering by just number
+                     active_as_filters_nums.add(f)
+
+
+            if active_as_filters_nums:
+                # Iterate through the newly inserted line content
+                line_content = self.log_text.get(start_index, end_index)
+                for as_num_str in active_as_filters_nums:
+                    # Define search patterns for the AS number
+                    # Search for "ASxxxx" and variations like " xxxx,", ",xxxx,", " xxxx "
+                    search_patterns = [f"AS{as_num_str}", f" {as_num_str},", f",{as_num_str},", f" {as_num_str} ", f",{as_num_str} "]
+
+                    for pattern in search_patterns:
+                        start_search = start_index
+                        while True:
+                            # Search within the range of the newly added line
+                            match_start = self.log_text.search(pattern, start_search, stopindex=end_index, nocase=True)
+                            if not match_start:
+                                break
+
+                            # Calculate match end index
+                            match_end = f"{match_start}+{len(pattern)}c"
+
+                            # Apply the 'filtered_as' tag
+                            self.log_text.tag_add("filtered_as", match_start, match_end)
+
+                            # Move search start past the current match
+                            start_search = match_end
+        # Scroll to the end
         self.log_text.see(tk.END)
+        # Re-enable text widget if needed (or keep it normal)
+        # self.log_text.config(state=tk.DISABLED) # If you want it read-only
 
     # New methods for thread-safe UI updates
     def update_ui_for_monitoring_start(self):
@@ -496,7 +563,7 @@ class BGPMonitorGUI:
             self.log_message("Data manager not initialized")
 
     def save_gui_settings(self): # Renamed method
-        """Save current settings to configuration file."""
+        """Save current GUI settings to configuration file."""
         current_settings = {
             "region": self.region_var.get() if hasattr(self, 'region_var') else "",
             "collectors": [],
@@ -697,10 +764,6 @@ class BGPMonitorGUI:
                     previous_origin_as = previous_origin_info['origin_as'] if previous_origin_info else None
                     # -------------------------------------
 
-                    # Log the raw update
-                    log_entry = f"{timestamp_dt.isoformat()} | Announce | {prefix} | Path: {as_path_str} | Peer: AS{peer_asn_str} ({peer_ip}) | NextHop: {current_next_hop} | Collector: {collector}"
-                    self.root.after(0, self.log_message, log_entry) # Schedule UI update
-
                     # --- Security Analysis ---
                     # Pass the actual previous origin AS from cache
                     alert = check_suspicious_patterns(
@@ -712,14 +775,24 @@ class BGPMonitorGUI:
                         previous_origin_as=previous_origin_as,
                         db_manager=self.bgp_monitor.db_manager # Pass db_manager if available
                     )
+
+                    # --- Determine Line Tag ---
+                    line_tag = None
                     if alert:
-                        # --- Log the alert using SecurityAlertLogger (handles DB/CSV/Standard Logging) ---
-                        # Pass the db_manager instance from the bgp_monitor
+                        line_tag = "alert_trigger"
+                    # --------------------------
+
+                    # Log the raw update with appropriate tag
+                    log_entry = f"{timestamp_dt.isoformat()} | Announce | {prefix} | Path: {as_path_str} | Peer: AS{peer_asn_str} ({peer_ip}) | NextHop: {current_next_hop} | Collector: {collector}"
+                    self.root.after(0, self.log_message, log_entry, line_tag) # Schedule UI update with tag
+
+                    # --- Process Alert (if any) ---
+                    if alert:
+                        # Log the alert using SecurityAlertLogger (handles DB/CSV/Standard Logging)
                         self.alert_logger.log_alert(alert, db_manager=self.bgp_monitor.db_manager)
-                        # -----------------------------------------------------------------------------------
-                        # Schedule UI update
+                        # Schedule UI update for the security panel
                         self.root.after(0, self.add_security_alert, alert)
-                    # -----------------------
+                    # ----------------------------
 
                     # --- Update prefix origin cache ---
                     if origin_as is not None: # Only cache if we have a valid origin
@@ -779,9 +852,9 @@ class BGPMonitorGUI:
                         # logging.debug(f"Removed {prefix} from origin cache due to withdrawal.")
                     # -----------------------------------------------------
 
-                    # Log the withdrawal
+                    # Log the withdrawal with the "withdrawal" tag
                     log_entry = f"{timestamp_dt.isoformat()} | Withdraw | {prefix} | Peer: AS{peer_asn_str} ({peer_ip}) | Collector: {collector}"
-                    self.root.after(0, self.log_message, log_entry) # Schedule UI update
+                    self.root.after(0, self.log_message, log_entry, "withdrawal") # Schedule UI update with tag
 
                     # Store in DB if enabled
                     if self.bgp_monitor.db_manager:
@@ -922,8 +995,13 @@ class BGPMonitorGUI:
             messagebox.showerror("Save Error", "Failed to save configuration files.", parent=window)
             return
 
-        # Update the global config used by db_manager initialization
-        db_config.NEO4J_CONFIG.update(new_config)
+        # Update the global config dictionary if it's still used elsewhere (e.g., initial load)
+        # Check if db_config_module.NEO4J_CONFIG exists and is used before updating
+        if hasattr(db_config_module, 'NEO4J_CONFIG'):
+            db_config_module.NEO4J_CONFIG.update(new_config)
+        else:
+             logging.warning("config.database_config.NEO4J_CONFIG not found, skipping update.")
+
 
         # Try to re-initialize the db_manager with new credentials
         try:
@@ -931,8 +1009,8 @@ class BGPMonitorGUI:
             if self.bgp_monitor and self.bgp_monitor.db_manager:
                 self.bgp_monitor.db_manager.close()
 
-            # Create new manager instance
-            self.bgp_monitor.db_manager = db_config.BGPDatabaseManager(uri, username, password)
+            # Create new manager instance using the correctly imported class
+            self.bgp_monitor.db_manager = BGPDatabaseManager(uri, username, password)
 
             # Check connection status immediately
             if self.check_db_connection():

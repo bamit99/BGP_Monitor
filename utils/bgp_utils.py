@@ -24,24 +24,52 @@ def format_timestamp(timestamp):
     try:
         if isinstance(timestamp, (int, float)):
             return datetime.fromtimestamp(timestamp).strftime('%Y-%m-%d %H:%M:%S')
-        return timestamp.strftime('%Y-%m-%d %H:%M:%S')
+        # Handle cases where timestamp might already be a datetime object
+        elif isinstance(timestamp, datetime):
+             return timestamp.strftime('%Y-%m-%d %H:%M:%S')
+        # Fallback for other types or potential string formats
+        return str(timestamp)
     except Exception:
         return str(timestamp)
 
 def validate_prefix(prefix):
     """Validate IP prefix format."""
     ipv4_pattern = r'^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$'
-    ipv6_pattern = r'^([0-9a-fA-F:]+:+)+[0-9a-fA-F]+/\d{1,3}$'
-    return bool(re.match(ipv4_pattern, prefix) or re.match(ipv6_pattern, prefix))
+    ipv6_pattern = r'^([0-9a-fA-F:]+:+)+[0-9a-fA-F:/]+/\d{1,3}$' # Adjusted IPv6 pattern slightly
+    try:
+        # More robust validation using ipaddress module
+        import ipaddress
+        ipaddress.ip_network(prefix, strict=False)
+        return True
+    except ValueError:
+        return False
+    except ImportError:
+        # Fallback to regex if ipaddress module is somehow unavailable
+        return bool(re.match(ipv4_pattern, prefix) or re.match(ipv6_pattern, prefix))
+
 
 def format_communities(communities):
     """Format BGP communities for display."""
     if not communities:
         return ""
+    # Handle potential string representation of list
     if isinstance(communities, str):
-        communities = eval(communities)
-    return ', '.join(f"{c[0]}:{c[1]}" if isinstance(c, (list, tuple)) else str(c) 
-                    for c in communities)
+        try:
+            # Safely evaluate string literal to list
+            import ast
+            communities = ast.literal_eval(communities)
+            if not isinstance(communities, list):
+                 return str(communities) # Return original string if not a list after eval
+        except (ValueError, SyntaxError):
+             return communities # Return original string if eval fails
+
+    # Format list of communities
+    if isinstance(communities, list):
+        return ', '.join(f"{c[0]}:{c[1]}" if isinstance(c, (list, tuple)) and len(c) == 2 else str(c)
+                        for c in communities)
+    # Fallback for unexpected types
+    return str(communities)
+
 
 # --- AS Relationship Data Handling ---
 
@@ -100,9 +128,9 @@ def load_as_relationships(filepath=DEFAULT_AS_REL_FILE_PATH):
                         asn2 = int(parts[1])
                         rel_code = int(parts[2])
 
-                        # Store the relationship (p2c or p2p)
+                        # Store the relationship (p2c or p2p or s2s)
                         # We derive c2p during lookup if needed
-                        if rel_code == P2C or rel_code == P2P or rel_code == S2S:
+                        if rel_code in [P2C, P2P, S2S]:
                              # Ensure lower ASN is first for consistent key lookup? Maybe not necessary.
                              # key = tuple(sorted((asn1, asn2))) # Alternative key style
                              key = (asn1, asn2)

@@ -20,7 +20,7 @@ from typing import Dict, List, Tuple, Set, Any, Optional
 
 # Import security analyzer for access to critical prefixes and ASNs
 from utils.security_analyzer import (
-    UK_CRITICAL_PREFIXES,
+    CRITICAL_PREFIXES, # Renamed from UK_CRITICAL_PREFIXES
     # UK_TELECOM_ASNS, # Removed import
     is_critical_prefix
 )
@@ -541,17 +541,18 @@ class BGPAnalyzer:
                 html.append("<tr><th>ASN</th><th>Count</th><th>UK Telecom</th></tr>")
                 
                 for asn, count in results['top_origin_asns'].items():
-                    if asn in UK_TELECOM_ASNS:
-                        uk_flag = "Yes"
-                        class_attr = "class='uk-highlight'"
-                    else:
-                        uk_flag = "No"
-                        class_attr = ""
-                        
+                    # Removed UK Telecom ASN highlighting logic
+                    # if asn in UK_TELECOM_ASNS:
+                    #     uk_flag = "Yes"
+                    #     class_attr = "class='uk-highlight'"
+                    # else:
+                    uk_flag = "N/A" # Placeholder as UK Telecom ASNs are removed
+                    class_attr = ""
+
                     html.append(f"<tr {class_attr}>")
                     html.append(f"<td>AS{asn}</td>")
                     html.append(f"<td>{count}</td>")
-                    html.append(f"<td>{uk_flag}</td>")
+                    html.append(f"<td>{uk_flag}</td>") # Display N/A or remove column
                     html.append("</tr>")
                 
                 html.append("</table>")

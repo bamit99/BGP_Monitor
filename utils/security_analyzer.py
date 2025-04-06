@@ -36,9 +36,8 @@ logger = logging.getLogger(__name__)
 # Path for security configuration
 CONFIG_DIR = Path(__file__).parent.parent / "config"
 
-# Load UK critical prefixes
-UK_CRITICAL_PREFIXES = set()
-# UK_TELECOM_ASNS = set() # Removed UK specific list
+# Load critical prefixes (generalized name)
+CRITICAL_PREFIXES = set()
 TRUSTED_TRANSIT_ASNS = set()
 KNOWN_BAD_ACTORS = set()
 
@@ -50,7 +49,7 @@ CONFIG_DIR.mkdir(exist_ok=True)
 # Try to load configuration, or create with defaults if not exists
 def load_security_config():
     """Load security configuration or create with defaults if not exists."""
-    global UK_CRITICAL_PREFIXES, TRUSTED_TRANSIT_ASNS, KNOWN_BAD_ACTORS # Removed UK_TELECOM_ASNS
+    global CRITICAL_PREFIXES, TRUSTED_TRANSIT_ASNS, KNOWN_BAD_ACTORS
 
     config_file = CONFIG_DIR / "security_config.json"
 
@@ -59,12 +58,12 @@ def load_security_config():
             with open(config_file, "r") as f:
                 config = json.load(f)
 
-            UK_CRITICAL_PREFIXES = set(config.get("uk_critical_prefixes", []))
-            # UK_TELECOM_ASNS = set(config.get("uk_telecom_asns", [])) # Removed loading UK ASNs
+            # Use the new generic key name "critical_prefixes"
+            CRITICAL_PREFIXES = set(config.get("critical_prefixes", config.get("uk_critical_prefixes", []))) # Read new key, fallback to old for compatibility
             TRUSTED_TRANSIT_ASNS = set(config.get("trusted_transit_asns", []))
             KNOWN_BAD_ACTORS = set(config.get("known_bad_actors", []))
 
-            logger.info(f"Loaded security configuration: {len(UK_CRITICAL_PREFIXES)} critical prefixes.") # Simplified log message
+            logger.info(f"Loaded security configuration: {len(CRITICAL_PREFIXES)} critical prefixes.")
         except Exception as e:
             logger.error(f"Error loading security config: {e}")
             # Initialize with defaults
@@ -76,13 +75,13 @@ def load_security_config():
 
 def init_default_config():
     """Initialize security configuration with default values."""
-    global UK_CRITICAL_PREFIXES, TRUSTED_TRANSIT_ASNS, KNOWN_BAD_ACTORS # Removed UK_TELECOM_ASNS
+    global CRITICAL_PREFIXES, TRUSTED_TRANSIT_ASNS, KNOWN_BAD_ACTORS
 
     # Default critical prefixes (examples) - Define prefixes whose announcements require extra scrutiny.
-    UK_CRITICAL_PREFIXES = {
-        "195.166.0.0/16",  # Example UK Government
-        "194.159.0.0/16",  # Example UK financial
-        "146.227.0.0/16",  # Example UK academic
+    CRITICAL_PREFIXES = {
+        "195.166.0.0/16",  # Example Government
+        "194.159.0.0/16",  # Example financial
+        "146.227.0.0/16",  # Example academic
         "62.172.0.0/16",   # Example UK telecom
         "194.36.0.0/16",   # Example UK telecom
     }
@@ -114,8 +113,7 @@ def save_security_config():
     config_file = CONFIG_DIR / "security_config.json"
 
     config = {
-        "uk_critical_prefixes": list(UK_CRITICAL_PREFIXES),
-        # "uk_telecom_asns": list(UK_TELECOM_ASNS), # Removed saving UK ASNs
+        "critical_prefixes": list(CRITICAL_PREFIXES), # Use the new generic key name
         "trusted_transit_asns": list(TRUSTED_TRANSIT_ASNS),
         "known_bad_actors": list(KNOWN_BAD_ACTORS),
     }
@@ -141,17 +139,18 @@ APP_SETTINGS = config_manager.load_app_settings()
 SECURITY_HEURISTICS_CONFIG = APP_SETTINGS.get("security_analysis", {}).get("heuristics", {})
 
 def is_critical_prefix(prefix: str) -> bool:
-    """Check if prefix is critical for UK infrastructure."""
+    """Check if prefix overlaps with the configured critical prefixes list."""
     try:
         prefix_net = ipaddress.ip_network(prefix)
 
         # Check if this prefix is in our critical list
-        for critical in UK_CRITICAL_PREFIXES:
+        for critical in CRITICAL_PREFIXES: # Use the renamed global variable
             critical_net = ipaddress.ip_network(critical)
 
             # If the prefix contains or is contained within a critical prefix
-            if prefix_net.subnet_of(critical_net) or critical_net.subnet_of(prefix_net):
-                return True
+            if prefix_net.version == critical_net.version: # Ensure same IP version
+                if prefix_net.subnet_of(critical_net) or critical_net.subnet_of(prefix_net):
+                    return True
 
         return False
     except Exception:
@@ -253,9 +252,9 @@ def check_possible_hijack(prefix: str, origin_as: Optional[int],
 
     # Check if the origin AS has changed compared to the cached previous origin
     if previous_origin_as is not None and previous_origin_as != origin_as:
-        # If this is a UK critical prefix, this is high severity
+        # If this is a critical prefix, this is high severity
         if is_critical_prefix(prefix):
-            reasons.append(f"CRITICAL: Origin change for UK critical prefix {prefix} "
+            reasons.append(f"CRITICAL: Origin change for critical prefix {prefix} " # Updated reason text
                            f"from AS{previous_origin_as} to AS{origin_as}")
         else:
             reasons.append(f"Origin change for prefix {prefix} "
@@ -265,7 +264,7 @@ def check_possible_hijack(prefix: str, origin_as: Optional[int],
     try:
         prefix_net = ipaddress.ip_network(prefix)
 
-        for critical in UK_CRITICAL_PREFIXES:
+        for critical in CRITICAL_PREFIXES: # Use the renamed global variable
             try:
                 critical_net = ipaddress.ip_network(critical)
             except ValueError:
@@ -504,7 +503,9 @@ class SecurityAlertLogger:
             'alert_peer_asn': alert.get('peer_asn', 'N/A'),
             'alert_reasons': '; '.join(alert.get('reasons', [])),
             'alert_critical': alert.get('is_critical_prefix', False),
-            'alert_severity': severity
+            'alert_severity': severity,
+            'alert_origin_as': alert.get('origin_as'), # Add origin
+            'alert_previous_origin_as': alert.get('previous_origin_as') # Add previous origin
         }
         log_message = (
             f"SecurityAlert [{severity}]: Prefix={log_extra['alert_prefix']}, "
@@ -664,8 +665,8 @@ def add_critical_prefix(prefix: str) -> bool:
     try:
         # Validate prefix format
         ipaddress.ip_network(prefix)
-        if prefix not in UK_CRITICAL_PREFIXES:
-            UK_CRITICAL_PREFIXES.add(prefix)
+        if prefix not in CRITICAL_PREFIXES: # Use the renamed global variable
+            CRITICAL_PREFIXES.add(prefix) # Use the renamed global variable
             save_security_config()
             logger.info(f"Added critical prefix: {prefix}")
             return True

@@ -1,69 +1,64 @@
-# Project Summary (Based on Reviewed Files)
+# Project Summary (Based on Reviewed Files - 2025-04-03)
 
 ## README.md
-- **Purpose**: Project overview, features, installation instructions, configuration details (database, security, GUI, logging), usage guide, project structure, dependencies, and error handling information. Mentions UI and file-based config for logging/Syslog.
+- **Purpose**: Project overview, features, installation, configuration (DB, Security Lists, GUI State, Logging/Syslog, Heuristics), usage, structure, dependencies, error handling. Mentions UI/file config for logging/Syslog. Includes details on configurable heuristics.
 
 ## main.py
-- **Purpose**: Main entry point. Sets up logging (including Syslog via `app_settings.json` and JSON formatter), handles signals, launches GUI.
+- **Purpose**: Main entry point. Sets up logging (reads `app_settings.json`, adds console/Syslog handlers, uses `JsonSyslogFormatter`), handles signals, launches GUI.
 
 ## gui/main_window.py
-- **Purpose**: Defines the `BGPMonitorGUI` class, the main graphical user interface.
+- **Purpose**: Defines the `BGPMonitorGUI` class (main UI).
 - **Responsibilities**:
-    - Builds the UI layout (control panel, log display, security alerts panel).
-    - Handles user interactions (region/collector selection, AS filtering, button clicks).
-    - Provides UI dialogs for DB and Syslog configuration (`app_settings.json`).
-    - Manages application state (monitoring status, selected filters).
-    - **Maintains in-memory cache (`prefix_origin_cache`) for tracking last seen origin AS per prefix.**
+    - Builds UI layout using `ttk.PanedWindow` for resizable panels.
+    - Handles user interactions (region/collector selection, AS filtering).
+    - Provides UI dialogs for DB and Syslog configuration.
+    - Manages application state (monitoring status).
+    - **Maintains in-memory cache (`prefix_origin_cache`) for tracking last seen origin AS.**
     - Loads/saves GUI settings (`gui_settings.json`) and App settings (`app_settings.json`).
-    - Initiates and controls the BGP monitoring process (`src/bgp_monitor.py`) in a separate thread.
-    - Displays BGP updates and security alerts.
-    - Calls `utils/security_analyzer.py` (`check_suspicious_patterns`) with current and previous origin AS for alert generation.
+    - Initiates/controls BGP monitoring thread (`src/bgp_monitor.py`).
+    - Displays BGP updates and security alerts (in Treeview).
+    - **Filters incoming BGP updates based on AS path filters set in UI.**
+    - **Calls `check_suspicious_patterns` with current/previous origin AS.**
+    - **Calls `alert_logger.log_alert` for generated alerts (triggers logging/DB/CSV).**
+    - Calls `add_security_alert` to update the UI Treeview.
 
 ## src/bgp_monitor.py
-- **Purpose**: Defines the `BGPMonitor` class for handling the live BGP data stream.
-- **Responsibilities**:
-    - Connects to the RIPE RIS WebSocket endpoint.
-    - Subscribes to specified BGP collectors.
-    - Receives BGP messages (JSON format).
-    - Manages the WebSocket connection (keepalives, error handling).
-    - Passes received messages to a callback function (`BGPMonitorGUI.process_update`) for processing.
-    - Optionally initializes `utils/db_manager.py`.
+- **Purpose**: Defines `BGPMonitor` class for handling live BGP data stream via WebSocket.
+- **Responsibilities**: Connects to RIPE RIS, subscribes, receives messages, handles keepalives, passes messages to `BGPMonitorGUI.process_update`.
 
 ## utils/security_analyzer.py
 - **Purpose**: Performs security analysis on BGP updates using configurable heuristics.
 - **Responsibilities**:
     - Loads security lists (critical prefixes, bad actors) from `config/security_config.json`.
-    - **Loads heuristic settings (thresholds, severities, enable flags for long_path, prepending, more_specific) from `app_settings.json`.**
-    - **Checks for BGP hijacks using previous origin AS data (passed from GUI cache).**
-    - Detects potential route leaks (valley-free path validation using AS relationship data).
-    - Analyzes AS paths (prepending, unusual transit) based on configured thresholds.
-    - Identifies impacts on critical prefixes.
-    - Validates RPKI status using RIPEstat API (`RPKIValidator` class), clarifying "None" reasons.
-    - Logs detected security alerts (`SecurityAlertLogger` class) using standard Python logging (with structured `extra` data) and optionally to CSV/DB.
-    - Uses `utils/bgp_utils.py` for AS relationships and `utils/as_lookup.py` for AS details.
+    - **Loads heuristic settings (thresholds, severities, enable flags) from `app_settings.json`.**
+    - **Checks hijacks using previous origin AS (from GUI cache).** Fixes IP version comparison bug.
+    - Detects leaks (valley-free using AS relationship data, long path, private ASNs) using configurable thresholds.
+    - Analyzes paths (prepending) using configurable thresholds.
+    - Checks RPKI status via RIPEstat API, clarifies "None" reasons.
+    - **`check_suspicious_patterns` function orchestrates checks based on config and returns alert dictionary.**
+    - `SecurityAlertLogger` class logs alerts via standard Python logging (with structured `extra` data) and optionally to CSV/DB.
 
 ## utils/db_manager.py
-- **Purpose**: Defines the `BGPDatabaseManager` class to manage Neo4j database operations.
+- **Purpose**: Defines `BGPDatabaseManager` class for Neo4j operations.
 - **Responsibilities**:
-    - Establishes and manages the Neo4j database connection.
-    - Initializes the graph schema.
-    - Stores BGP updates and security alerts.
-    - Provides methods to query the database.
-    - Exports alerts from the database to CSV.
+    - Manages Neo4j connection and schema initialization.
+    - Stores BGP updates and security alerts (robust alert storage implemented).
+    - Provides query methods (prefix history, AS announcements, recent alerts).
+    - Exports alerts to CSV.
 
 ## utils/config_manager.py
 - **Purpose**: Manages loading/saving configuration.
 - **Responsibilities**:
     - Handles Neo4j config (`db_config.json`, `database_config.ini`).
     - Handles GUI state (`gui_settings.json`).
-    - **Handles application settings (`app_settings.json`), including logging/Syslog and security heuristic configurations.** Uses deep merge for loading.
+    - **Handles application settings (`app_settings.json`), including logging/Syslog and security heuristic configurations.** Uses deep merge.
 
 ## utils/bgp_utils.py
 - **Purpose**: Utility functions for BGP data processing, including AS relationship loading.
 - **Responsibilities**:
     - Validates ASNs, prefixes. Formats timestamps, communities.
-    - **Loads AS relationship data from CAIDA file (`data/as_relationships.txt.bz2`) for route leak analysis.** Includes comments explaining the source requirement.
+    - **Loads AS relationship data from CAIDA file (`data/as_relationships.txt.bz2`). Includes comments explaining the source requirement.**
     - Provides `get_as_relationship` function.
 
 ## IMPROVEMENT_PLAN.md
-- **Purpose**: Documents the analysis of security features and the plan for improvements (state management, heuristics, formatting, config).
+- **Purpose**: Documents the analysis of security features and the implemented improvement plan (state management, heuristics, formatting, config, bug fixes).

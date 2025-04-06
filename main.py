@@ -11,38 +11,38 @@ from gui.main_window import BGPMonitorGUI
 def signal_handler(signum, frame):
     """Handle interrupt signals."""
     sys.exit(0)
-    
-    class JsonSyslogFormatter(logging.Formatter):
-        """
-        Custom formatter to output log records as JSON,
-        including extra fields relevant for SIEM.
-        """
-        def format(self, record):
-            log_entry = {
-                'timestamp': self.formatTime(record, self.datefmt),
-                'name': record.name,
-                'level': record.levelname,
-                'message': record.getMessage(),
-            }
-            # Add standard exception info if present
-            if record.exc_info:
-                log_entry['exception'] = self.formatException(record.exc_info)
-            if record.stack_info:
-                log_entry['stack_info'] = self.formatStack(record.stack_info)
-    
-            # Add extra fields passed via logger.log(..., extra=...)
-            # Filter out standard fields already included
-            standard_fields = {'args', 'asctime', 'created', 'exc_info', 'exc_text',
-                               'filename', 'funcName', 'levelname', 'levelno', 'lineno',
-                               'module', 'msecs', 'message', 'msg', 'name', 'pathname',
-                               'process', 'processName', 'relativeCreated', 'stack_info',
-                               'thread', 'threadName'}
-            if hasattr(record, '__dict__'):
-                extra_data = {k: v for k, v in record.__dict__.items() if k not in standard_fields}
-                if extra_data:
-                    log_entry['extra'] = extra_data
-    
-            return json.dumps(log_entry)
+
+class JsonSyslogFormatter(logging.Formatter):
+    """
+    Custom formatter to output log records as JSON,
+    including extra fields relevant for SIEM.
+    """
+    def format(self, record):
+        log_entry = {
+            'timestamp': self.formatTime(record, self.datefmt),
+            'name': record.name,
+            'level': record.levelname,
+            'message': record.getMessage(),
+        }
+        # Add standard exception info if present
+        if record.exc_info:
+            log_entry['exception'] = self.formatException(record.exc_info)
+        if record.stack_info:
+            log_entry['stack_info'] = self.formatStack(record.stack_info)
+
+        # Add extra fields passed via logger.log(..., extra=...)
+        # Filter out standard fields already included
+        standard_fields = {'args', 'asctime', 'created', 'exc_info', 'exc_text',
+                           'filename', 'funcName', 'levelname', 'levelno', 'lineno',
+                           'module', 'msecs', 'message', 'msg', 'name', 'pathname',
+                           'process', 'processName', 'relativeCreated', 'stack_info',
+                           'thread', 'threadName'}
+        if hasattr(record, '__dict__'):
+            extra_data = {k: v for k, v in record.__dict__.items() if k not in standard_fields}
+            if extra_data:
+                log_entry['extra'] = extra_data
+
+        return json.dumps(log_entry)
 
 def setup_logging():
     """Configure logging based on application settings."""
@@ -52,6 +52,12 @@ def setup_logging():
     log_level = getattr(logging, log_level_str, logging.INFO)
 
     # Basic configuration (console or file - adjust as needed)
+    # Ensure handlers are removed before basicConfig to avoid duplicates if run multiple times
+    root_logger = logging.getLogger()
+    if root_logger.hasHandlers():
+        for handler in root_logger.handlers[:]:
+            root_logger.removeHandler(handler)
+
     log_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     logging.basicConfig(level=log_level, format=log_format) # Basic config first
 
@@ -87,17 +93,20 @@ def main():
     # Set up signal handlers
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
-    
+
     # Create and run GUI
     root = tk.Tk()
     app = BGPMonitorGUI(root)
     root.protocol("WM_DELETE_WINDOW", app.on_closing)
-    
+
     try:
         root.mainloop()
     except KeyboardInterrupt:
         app.on_closing()
     finally:
+        # Ensure sys.exit is called even if mainloop raises other exceptions
+        # Although KeyboardInterrupt is caught, other Tkinter errors might occur.
+        logging.info("Application exiting.")
         sys.exit(0)
 
 if __name__ == "__main__":

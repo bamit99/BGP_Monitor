@@ -8,17 +8,25 @@ BGP Monitor is a tool for collecting, analyzing, and monitoring BGP routing upda
 
 - Real-time BGP update monitoring from RIPE RIS
 - AS path and prefix tracking
-- Neo4j graph database integration
+- Real-time BGP update collection via WebSockets from RIPE RIS.
+- Data storage in Neo4j graph database and/or CSV files.
+- User-friendly GUI built with Tkinter and ttkwidgets.
+- Configurable filtering by AS numbers.
+- Geographic region-based collector selection with location display.
+- AS Information lookup using external APIs.
 - Advanced security analysis:
-  - BGP hijacking detection
-  - Route leak detection
-  - Path manipulation monitoring
-  - RPKI validation
-  - Critical infrastructure monitoring
-- Automatic failover to CSV storage
-- Customizable filtering by AS numbers
-- Geographic region-based collector selection
-- User-friendly GUI interface with security alerts panel
+  - **BGP Hijacking Detection:** Monitors origin AS changes using a prefix origin cache. Detects suspicious more-specific announcements of critical prefixes. Flags announcements from known bad actors.
+  - **Route Leak Detection:** Implements valley-free path validation using AS relationship data (`data/as_relationships.txt.bz2`). Detects suspiciously long AS paths and paths containing private ASNs.
+  - **RPKI Validation:** Validates announcements against RPKI data using the RIPEstat Validator API.
+  - **Path Prepending Detection:** Identifies excessive AS path prepending based on configurable thresholds.
+  - **Critical Infrastructure Monitoring:** Allows defining critical prefixes for heightened alert severity.
+  - **Known Bad Actor Monitoring:** Flags updates involving ASNs listed as known bad actors.
+- Configurable security heuristics (thresholds, severity) via `config/app_settings.json`.
+- Detailed security alert logging to standard logging, daily CSV files (`data/security_alerts/`), and Neo4j.
+- Configurable Syslog forwarding with JSON formatting for SIEM integration.
+- GUI panel for viewing, sorting, and exporting security alerts.
+- Database connection status indicator and entry count display.
+- Automatic reconnection logic for WebSocket connections.
 
 ## Installation
 
@@ -40,14 +48,24 @@ pip install -r requirements.txt
    ```
    - Edit the configuration file with your Neo4j credentials:
    ```bash
-   # In config/database_config.ini
+   # Edit config/db_config.json (Recommended)
+   {
+     "uri": "bolt://localhost:7687",
+     "username": "neo4j",
+     "password": "your_password"
+   }
+
+   # Or, edit config/database_config.ini (Less preferred)
    [neo4j]
    uri = bolt://localhost:7687
    username = neo4j
    password = your_password
    ```
+   *Note: Configuration is primarily managed via `utils/config_manager.py` which favors `db_config.json`.*
 
 ## Running the Application
+
+Ensure your Neo4j instance (if used) is running.
 
 To start the BGP Monitor:
 
@@ -59,46 +77,37 @@ This will launch the GUI interface.
 
 ## Configuration
 
-### Database Configuration
+### Central Configuration (`utils/config_manager.py`)
 
-The application supports Neo4j database integration for storing and analyzing BGP updates. You can configure the database connection in three ways:
+Configuration is managed centrally via `utils/config_manager.py`, loading settings primarily from JSON files in the `config/` directory.
 
-1. **Using the GUI**: Click the "Connect DB" button in the main interface to set up your Neo4j connection.
+### Database Configuration (`config/db_config.json`)
 
-2. **Configuration Files**:
-   - INI format: Edit `config/database_config.ini`
-   - JSON format: Edit `config/db_config.json`
+Neo4j integration is optional but recommended for advanced analysis and historical data storage.
 
-3. **Via Code**: Use the `update_neo4j_config()` function in the database_config module:
-   ```python
-   from config.database_config import update_neo4j_config
-   
-   update_neo4j_config(
-       uri="bolt://localhost:7687",
-       username="neo4j",
-       password="your_password"
-   )
-   ```
+- **Using the GUI**: Click the "Connect DB" button. This opens a dialog to enter and test connection details (URI, Username, Password). Saving updates `config/db_config.json`.
+- **Manual Edit**: Directly edit `config/db_config.json` before starting the application.
 
-### Security Configuration
+### Security Configuration (`config/security_config.json`)
 
-The application includes advanced security monitoring features:
+This file defines parameters for the security analysis module (`utils/security_analyzer.py`):
 
-1. **Critical Infrastructure**: Define critical UK prefixes and ASNs in `config/security_config.json`
-2. **RPKI Validation**: Uses RIPE RPKI Validator API for route validation
-3. **Alert Levels**: Configurable severity levels (LOW, MEDIUM, HIGH)
-4. **Data Persistence**: 
-   - Stores alerts in Neo4j for analysis
-   - Automatic CSV backup in `data/security_alerts/`
+- **`critical_prefixes`**: A list of IP prefixes considered critical. Announcements affecting these prefixes may trigger higher severity alerts or specific checks (e.g., more-specific announcements).
+- **`known_bad_actors`**: A list of ASNs identified as sources of malicious BGP activity. Updates involving these ASNs trigger alerts. Populate this based on your threat intelligence.
+- **`trusted_transit_asns`**: A list of ASNs generally considered reliable transit providers. (Currently used for context, potential future checks).
 
-### GUI Settings
+*If `security_config.json` is missing, it will be created with example default values.*
 
-The application saves GUI settings such as selected region, collectors, and AS filters. These settings are stored in `config/gui_settings.json` and are loaded automatically when the application starts.
+### Application Settings (`config/app_settings.json`)
 
-### Logging Configuration
+This file controls general application behavior, logging, and security heuristic tuning:
 
-The application's logging behavior, including Syslog forwarding, can be configured via the "Syslog Settings" button in the main UI or by directly editing `config/app_settings.json`. If this file doesn't exist, it will be created with default values upon first run.
+### GUI Settings (`config/gui_settings.json`)
 
+The application saves GUI state (selected region, collectors, AS filters) to this file on exit and loads them on startup.
+
+```json
+{
 ```json
 {
   "logging": {
@@ -109,70 +118,123 @@ The application's logging behavior, including Syslog forwarding, can be configur
       "port": 514,
       "protocol": "UDP"
     }
+  },
+  "security_analysis": {
+    "heuristics": {
+      "long_path": {
+        "enabled": true,
+        "threshold": 30,
+        "severity": "LOW"
+      },
+      "prepending": {
+        "enabled": true,
+        "threshold": 5,
+        "severity": "LOW"
+      },
+      "more_specific": {
+        "enabled": true,
+        "prefix_length_diff": 4,
+        "severity": "MEDIUM"
+      }
+      // Add other potential heuristics here if needed
+    }
   }
+  // Other application settings can be added here
 }
 ```
 
-- **level**: Minimum logging level (e.g., "DEBUG", "INFO", "WARNING", "ERROR").
-- **syslog.enabled**: Set to `true` to enable Syslog forwarding.
-- **syslog.host**: IP address or hostname of the Syslog server.
-- **syslog.port**: Port number for the Syslog server (e.g., 514 for UDP, 6514 for TCP).
-- **syslog.protocol**: Protocol to use ("UDP" or "TCP").
+- **`logging.level`**: Minimum logging level for standard output/file logging (e.g., "DEBUG", "INFO", "WARNING", "ERROR").
+- **`logging.syslog.enabled`**: Set to `true` to enable Syslog forwarding.
+- **`logging.syslog.host`**: IP address or hostname of the Syslog server.
+- **`logging.syslog.port`**: Port number for the Syslog server.
+- **`logging.syslog.protocol`**: Protocol ("UDP" or "TCP"). Logs are sent in JSON format using a custom formatter (`main.py:JsonSyslogFormatter`).
+- **`security_analysis.heuristics.*.enabled`**: Enable or disable specific heuristic checks (e.g., `long_path`, `prepending`, `more_specific`).
+- **`security_analysis.heuristics.*.threshold`**: Adjust detection thresholds (e.g., max path length for `long_path`, repetition count for `prepending`, prefix length difference for `more_specific`).
+- **`security_analysis.heuristics.*.severity`**: Set the default alert severity ("LOW", "MEDIUM", "HIGH") if an alert is triggered *solely* by that specific heuristic. The final alert severity is the highest severity among all triggered reasons.
+
+*If `app_settings.json` is missing, it will be created with default values upon first run.*
 
 ## Usage
 
-1. **Select a Region**: Choose a geographic region from the dropdown menu.
-
-2. **Select Collectors**: Choose one or more BGP collectors from the list.
-
-3. **Add AS Filters**: Enter AS numbers to filter updates by specific autonomous systems.
-
-4. **Start Monitoring**: Click the "Start Monitoring" button to begin collecting BGP updates.
-
-5. **View Updates**: BGP updates matching your criteria will appear in the log area.
-
-6. **Monitor Security**: The security panel shows real-time alerts for:
-   - BGP hijacking attempts
-   - Route leaks
-   - Path manipulation
-   - RPKI invalidity
-   - Critical infrastructure impacts
-
-7. **Export Data**: 
-   - Use the "Export Alerts" button to save security alerts to CSV
-   - Daily CSV backups are automatically maintained
-   - Neo4j database stores full alert history
+1.  **Configure**: Set up database connection (`Connect DB` button or `config/db_config.json`) and Syslog (`Syslog Settings` button or `config/app_settings.json`) if needed. Review `config/security_config.json` and `config/app_settings.json` for security parameters and heuristics.
+2.  **Select Region & Collectors**: Choose a geographic region and one or more RIPE RIS collectors from the GUI lists. Collector locations are displayed.
+3.  **Set AS Filters (Optional)**: Enter AS numbers (e.g., "AS64512" or "64512") in the "AS Number Filtering" section and click "Add Filter". Only updates whose AS path contains at least one of the filtered ASNs will be processed. Use "Remove Filter" or "Clear All" to manage filters.
+4.  **AS Info (Optional)**: Select an AS number in the filter list and click "AS Info" to look up details about that AS.
+5.  **Start Monitoring**: Click "Start Monitoring". The button changes to "Stop Monitoring".
+6.  **View Updates**: Real-time BGP updates (announcements and withdrawals) matching filters appear in the "BGP Updates" log panel.
+7.  **Monitor Security Alerts**: The "Security Alerts" panel displays detected potential issues (hijacks, leaks, RPKI invalid, etc.).
+    - Click column headers ("Timestamp", "Severity", "Type", "Details") to sort alerts.
+    - Click "Export Alerts" to save the currently displayed alerts to a CSV file.
+8.  **Manage Data**:
+    - Click "Clear Log" to clear the "BGP Updates" panel.
+    - Click "Open Data" to open the `data/` directory (containing CSV backups, AS relationship files) in your file explorer.
+    - **Color Coding**: The "BGP Updates" panel uses color coding for better readability:
+        - Default Announcements: Black text
+        - Withdrawals: Blue text
+        - Updates Triggering Security Alerts: Orange text (entire line)
+        - Filtered AS Numbers: Bold Green text (applied to the specific AS number within the line, unless the line is an alert)
+9.  **Stop Monitoring**: Click "Stop Monitoring".
+10. **Check Status**: Monitor the DB connection LED and entry count at the bottom of the window.
 
 ## Project Structure
 
-- `main.py`: Main entry point
-- `gui/`: GUI components and security panel
-- `config/`: Configuration files
-- `utils/`: 
-  - `security_analyzer.py`: Security monitoring and analysis
-  - `db_manager.py`: Neo4j database operations
-  - `config_manager.py`: Configuration management
-- `src/`: Core application code
-- `data/`: CSV storage for updates and alerts
+- **`main.py`**: Main application entry point, sets up logging (including JSON Syslog formatter), initializes and runs the GUI.
+- **`gui/`**: Contains the Tkinter GUI code.
+  - `main_window.py`: Defines the main application window, layout, widgets, event handling, and interaction with backend modules.
+- **`src/`**: Core BGP monitoring logic.
+  - `bgp_monitor.py`: Handles connecting to RIPE RIS via WebSockets, receiving messages, and dispatching them for processing.
+  - `connection_manager.py`: (Potentially used for managing WebSocket connections - verify usage).
+- **`utils/`**: Utility modules providing various functionalities.
+  - `security_analyzer.py`: Core logic for analyzing BGP updates for security threats (hijacks, leaks, RPKI, etc.). Includes `SecurityAlertLogger`.
+  - `db_manager.py`: Handles all interactions with the Neo4j database (storing updates, alerts, querying data).
+  - `config_manager.py`: Centralized loading and saving of configuration files (`app_settings.json`, `gui_settings.json`, `db_config.json`, `security_config.json`).
+  - `bgp_utils.py`: Helper functions for BGP data, including loading and querying AS relationship data.
+  - `as_lookup.py`: Fetches AS information (name, country, etc.) from external APIs.
+  - `data_manager.py`: Manages file paths and operations within the `data/` directory.
+  - `analysis.py`: (Potentially contains data analysis functions - verify usage).
+- **`config/`**: Configuration files.
+  - `app_settings.json`: General settings, logging config, security heuristics.
+  - `gui_settings.json`: Saved state of the GUI (region, collectors, filters).
+  - `db_config.json`: Neo4j connection details.
+  - `security_config.json`: Lists of critical prefixes, bad actors, trusted ASNs.
+  - `collectors.py`: Defines available RIPE RIS collectors by region.
+  - `database_config.py`: Contains `BGPDatabaseManager` class definition (though instance is often created via `db_manager.py`).
+  - `database_config.ini`, `db_config.json.template`: Alternative/template config files.
+- **`data/`**: Directory for storing runtime data.
+  - `security_alerts/`: Contains daily CSV backups of security alerts.
+  - `as_relationships.txt.bz2`: (Required) File containing AS relationship data (downloaded separately, e.g., from CAIDA).
+- **`tests/`**: Unit and integration tests.
+- **`requirements.txt`**: Python package dependencies.
+- **`README.md`**: This file.
+- **`LICENSE`**: Project license information.
+- **`.gitignore`**, **`.gitattributes`**: Git configuration files.
 
 ## Dependencies
 
-Key dependencies (see requirements.txt for full list):
-- websockets>=10.0: WebSocket client for RIPE RIS
-- neo4j>=5.14.0: Neo4j database driver
-- tkinter>=8.6: GUI framework
-- requests>=2.25.1: HTTP client for RPKI validation
-- pandas>=1.2.0: Data analysis
-- python-dotenv>=1.0.0: Environment configuration
+Key dependencies (see `requirements.txt` for the full list and specific versions):
 
-## Error Handling
+- `websockets`: For connecting to RIPE RIS live stream.
+- `neo4j`: Python driver for Neo4j database interaction.
+- `requests`: For making HTTP requests (e.g., to RPKI validator API, AS lookup).
+- `pandas`: Used for data manipulation (e.g., potentially in `utils/analysis.py`).
+- `ttkwidgets`: Provides additional themed widgets for the Tkinter GUI.
+- `python-dateutil`: For flexible datetime parsing.
+- `aiohttp`, `asyncio`: Core libraries for asynchronous operations (used by `websockets`).
+- `pathlib`: Modern path manipulation (standard library).
+- `ipaddress`: For IP address and network manipulation (standard library).
+- `tkinter`: GUI framework (standard library).
 
-The application includes robust error handling:
-1. Automatic reconnection for WebSocket drops
-2. Exponential backoff for connection retries
-3. Failover to CSV storage if database is unavailable
-4. Daily log rotation for alerts and updates
+*Note: `tkinter` is part of the standard Python library but might require separate installation on some Linux distributions (e.g., `sudo apt-get install python3-tk`).*
+
+## Error Handling & Resilience
+
+- **WebSocket Reconnection**: Automatically attempts to reconnect to RIPE RIS using exponential backoff if the connection drops.
+- **Database Robustness**: Logs errors during database operations but attempts to continue running. Security alerts are logged to CSV as a backup if DB logging fails. Schema initialization includes checks for existing constraints/indexes.
+- **Configuration Loading**: Handles missing configuration files by creating defaults.
+- **API Failures**: Logs errors during RPKI validation or AS lookup API calls. RPKI validation falls back to "UNKNOWN" state on error.
+- **Logging**: Comprehensive logging captures errors and warnings during operation. Syslog forwarding provides external monitoring capabilities.
+- **Prefix Origin Cache**: Implements a simple size limit (`MAX_PREFIX_CACHE_SIZE`) to prevent unbounded memory growth.
 
 ## Contributing
 
-Please read CONTRIBUTING.md for details on our code of conduct and the process for submitting pull requests.
+Contributions are welcome! Please refer to the project's contribution guidelines (if available) or open an issue to discuss potential changes.
