@@ -1,5 +1,7 @@
 {
     "region": "Europe",
-    "collectors": [],
+    "collectors": [
+        "rrc01"
+    ],
     "as_filters": []
 }

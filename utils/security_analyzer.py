@@ -29,6 +29,7 @@ from utils.bgp_utils import ( # Import AS relationship functions
 from utils.as_lookup import ASLookup # Added import
 from utils.config_manager import config_manager # Import shared config manager
 from utils.anomaly_detector import AnomalyDetector # Import ML detector
+from utils.notification_manager import send_email_alert # Import email function
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -539,6 +540,13 @@ class SecurityAlertLogger:
             except Exception as e:
                 logger.error(f"Failed to log alert to database: {e}")
         # --------------------------------------
+
+        # --- Send Email Alert ---
+        try:
+            send_email_alert(alert) # Call the email function
+        except Exception as e:
+            logger.error(f"Failed to send email alert: {e}")
+        # ------------------------
 
     def _log_to_csv(self, alert):
         """Log alert to CSV file."""

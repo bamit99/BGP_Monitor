@@ -30,5 +30,20 @@
                 "severity": "MEDIUM"
             }
         }
+    },
+    "notifications": {
+        "email": {
+            "enabled": false,
+            "smtp_host": "smtp.example.com",
+            "smtp_port": 587,
+            "smtp_user": "",
+            "smtp_password": "",
+            "use_tls": true,
+            "sender_email": "bgp-monitor@example.com",
+            "recipient_emails": [
+                "admin@example.com"
+            ],
+            "min_email_severity": "MEDIUM"
+        }
     }
 }
