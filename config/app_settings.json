@@ -7,5 +7,28 @@
             "port": 514,
             "protocol": "UDP"
         }
+    },
+    "security_analysis": {
+        "heuristics": {
+            "long_path": {
+                "enabled": true,
+                "threshold": 30,
+                "severity": "LOW"
+            },
+            "prepending": {
+                "enabled": true,
+                "threshold": 5,
+                "severity": "LOW"
+            },
+            "more_specific": {
+                "enabled": true,
+                "prefix_length_diff": 4,
+                "severity": "MEDIUM"
+            },
+            "ml_anomaly": {
+                "enabled": true,
+                "severity": "MEDIUM"
+            }
+        }
     }
 }

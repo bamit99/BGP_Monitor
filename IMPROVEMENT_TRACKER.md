@@ -24,8 +24,8 @@ This file tracks suggested improvements for the BGP security monitoring capabili
     *   **Description:** Replace static bad actor lists with integration into dynamic threat intelligence feeds for malicious ASNs/prefixes.
     *   **Impact:** Medium-High (Improves detection of known malicious activity).
 
-- [ ] **Enhance Anomaly Detection:**
-    *   **Description:** Move beyond simple origin checks. Build historical profiles/baselines for prefix behavior (origins, upstreams, stability) and flag deviations.
+- [ ] **Enhance Anomaly Detection:** (In Progress)
+    *   **Description:** Move beyond simple origin checks. Build historical profiles/baselines for prefix behavior (origins, upstreams, stability) and flag deviations. **(Initial Isolation Forest implementation added; requires model training/loading)**
     *   **Impact:** Medium-High (Can detect novel or subtle hijacking attempts).
 
 - [ ] **Improve Configuration Management:**

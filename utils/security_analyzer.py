@@ -28,6 +28,7 @@ from utils.bgp_utils import ( # Import AS relationship functions
 )
 from utils.as_lookup import ASLookup # Added import
 from utils.config_manager import config_manager # Import shared config manager
+from utils.anomaly_detector import AnomalyDetector # Import ML detector
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -444,6 +445,9 @@ class RPKIValidator:
 # Initialize RPKI validator
 rpki_validator = RPKIValidator()
 
+# Initialize Anomaly Detector globally (consider lifecycle management later)
+anomaly_detector = AnomalyDetector()
+
 def check_rpki_validity(prefix: str, origin_as: Optional[int]) -> Tuple[bool, List[str]]:
     """
     Check if the route announcement is invalid according to RPKI.
@@ -638,6 +642,27 @@ def check_suspicious_patterns(timestamp, prefix, as_path, peer_asn, previous_ori
         # Bad actor in transit path is high severity
         alert_severity = max(alert_severity, "HIGH", key=lambda s: {"LOW": 0, "MEDIUM": 1, "HIGH": 2}.get(s, 0))
         all_reasons.extend(transit_reasons)
+
+    # 7. Check for ML-based Anomalies
+    ml_config = heuristics_config.get("ml_anomaly", {"enabled": True, "severity": "MEDIUM"})
+    if ml_config.get("enabled", True):
+        # Prepare data for feature extraction
+        update_data_for_ml = {
+            'timestamp': timestamp,
+            'prefix': prefix,
+            'as_path': as_path,
+            # Add other relevant fields if needed by extract_features
+        }
+        features = anomaly_detector.extract_features(update_data_for_ml)
+        if features is not None:
+            prediction = anomaly_detector.predict(features)
+            if prediction == -1: # -1 indicates anomaly
+                ml_severity = ml_config.get("severity", "MEDIUM")
+                alert_severity = max(alert_severity, ml_severity, key=lambda s: {"LOW": 0, "MEDIUM": 1, "HIGH": 2}.get(s, 0))
+                all_reasons.append("ML Anomaly Detected (Isolation Forest)")
+        else:
+            logger.debug(f"Could not extract features for ML prediction for prefix {prefix}")
+
 
     # Combine reasons and determine overall severity (already done via max())
 
