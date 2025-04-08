@@ -2,8 +2,8 @@
     "logging": {
         "level": "INFO",
         "syslog": {
-            "enabled": false,
-            "host": "localhost",
+            "enabled": true,
+            "host": "192.168.0.5",
             "port": 514,
             "protocol": "UDP"
         }
