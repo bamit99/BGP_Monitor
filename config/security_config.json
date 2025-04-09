@@ -20,5 +20,28 @@
     6453,
     6762
   ],
-  "known_bad_actors": []
+  "known_bad_actors": [],
+  "examples": {
+    "comment": "This section is for examples only and is not read by the tool.",
+    "critical_prefixes": [
+      "198.51.100.0/24",
+      "203.0.113.0/24",
+      "192.0.2.0/24"
+    ],
+    "trusted_transit_asns": [
+      3356,
+      174,
+      2914
+    ],
+    "known_bad_actors": [
+      65530,
+      65531
+    ]
+  },
+  "key_explanations": {
+    "comment": "This section explains the purpose of the keys used by the tool.",
+    "critical_prefixes": "A list of IP prefixes (CIDR notation) considered critical. Announcements involving these prefixes (or more specifics) trigger higher scrutiny and alert severity.",
+    "trusted_transit_asns": "A list of AS Numbers generally considered reliable transit providers. Currently used for informational context, but could be used in future heuristic checks.",
+    "known_bad_actors": "A list of AS Numbers identified as sources of malicious BGP activity (e.g., from threat intelligence). Announcements originating from or transiting through these ASNs trigger high-severity alerts."
+  }
 }
