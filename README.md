@@ -152,35 +152,8 @@ The application saves GUI state (selected region, collectors, AS filters) to thi
 - **`security_analysis.heuristics.*.enabled`**: Enable or disable specific heuristic checks (e.g., `long_path`, `prepending`, `more_specific`).
 - **`security_analysis.heuristics.*.threshold`**: Adjust detection thresholds (e.g., max path length for `long_path`, repetition count for `prepending`, prefix length difference for `more_specific`).
 - **`security_analysis.heuristics.*.severity`**: Set the default alert severity ("LOW", "MEDIUM", "HIGH") if an alert is triggered *solely* by that specific heuristic. The final alert severity is the highest severity among all triggered reasons.
-- **`security_analysis.heuristics.ml_anomaly.enabled`**: Enable/disable the experimental ML anomaly detection check.
 
 *If `app_settings.json` is missing, it will be created with default values upon first run.*
-
-#### ML Anomaly Detection (Experimental)
-
-This tool includes an experimental feature for detecting BGP anomalies using Machine Learning (Isolation Forest).
-
-**Purpose:** Aims to identify unusual patterns in BGP updates that might not trigger specific heuristic rules but deviate significantly from typical behavior. It analyzes features like AS path length, unique AS count, prefix length, time since last update, and origin AS changes.
-
-**Enabling/Disabling:**
-1. Open the `config/app_settings.json` file.
-2. Locate the `security_analysis.heuristics.ml_anomaly` section.
-3. Set the `"enabled"` value to `true` to enable the check or `false` to disable it.
-   ```json
-   "ml_anomaly": {
-       "enabled": true, // Set to true or false
-       "severity": "MEDIUM"
-   }
-   ```
-4. Save the file. The change takes effect on the next BGP update processed (no restart needed for this specific toggle).
-
-**Current Limitation (IMPORTANT):**
-As of now, the underlying Machine Learning model (`IsolationForest`) is **not trained**. This means:
-*   If enabled, the tool will log a warning message like `Anomaly model not fitted. Cannot predict.` for each update processed by the ML check.
-*   The check will default to predicting every update as "normal" (not anomalous).
-*   It **will not** effectively detect anomalies until a model training process is implemented and a trained model is loaded.
-
-Future work involves adding a script to train this model using historical BGP data.
 
 ## Usage
 
