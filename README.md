@@ -4,6 +4,10 @@
 
 BGP Monitor is a tool for collecting, analyzing, and monitoring BGP routing updates in real-time. It connects to RIPE RIS (Routing Information Service) to receive live BGP updates, processes them, and stores them in both CSV files and a Neo4j graph database.
 
+![00009-1333009465](https://github.com/user-attachments/assets/1d663e1a-9f98-4a65-bb29-84cc23bde76d)
+
+
+
 ## Key Features
 
 - Real-time BGP update monitoring from RIPE RIS
