@@ -3,6 +3,7 @@ from neo4j.exceptions import ClientError
 import logging
 import json # Import the json module
 from datetime import datetime
+from typing import Dict, List, Optional, Any, Tuple, Set
 
 class BGPDatabaseManager:
     """Manages Neo4j database operations for BGP update data."""
@@ -502,3 +503,149 @@ class BGPDatabaseManager:
         except Exception as e:
             logging.error(f"Error exporting alerts to CSV: {e}")
             return False
+
+    # --- EPISODE SUPPORT ---
+    def store_episode(self, episode: Dict, final: bool = False) -> bool:
+        """
+        Store or update an episode in Neo4j.
+        Args:
+            episode: Dictionary representing the episode (see Episode.to_dict())
+            final: Whether this is the final update (episode closed)
+        """
+        try:
+            with self.driver.session() as session:
+                # Serialize metadata as JSON
+                metadata_json = json.dumps(episode.get("metadata", {}))
+                # Use episode_id as unique key
+                episode_id = episode.get("id")
+                session.run("""
+                    MERGE (e:Episode {episode_id: $episode_id})
+                    SET e.prefix = $prefix,
+                        e.origin_as = $origin_as,
+                        e.start_time = $start_time,
+                        e.end_time = $end_time,
+                        e.max_severity = $max_severity,
+                        e.score = $score,
+                        e.event_count = $event_count,
+                        e.metadata = $metadata,
+                        e.status = $status
+                    """,
+                    episode_id=episode_id,
+                    prefix=episode.get("prefix"),
+                    origin_as=episode.get("origin_as"),
+                    start_time=episode.get("start_time"),
+                    end_time=episode.get("end_time"),
+                    max_severity=episode.get("max_severity"),
+                    score=episode.get("score"),
+                    event_count=episode.get("event_count"),
+                    metadata=metadata_json,
+                    status=episode.get("status", "OPEN")
+                )
+            return True
+        except Exception as e:
+            logging.error(f"Error storing episode: {e}")
+            return False
+
+    def get_episode_by_id(self, episode_id: str) -> Optional[Dict]:
+        """
+        Retrieve an episode by its ID.
+        """
+        try:
+            with self.driver.session() as session:
+                result = session.run("""
+                    MATCH (e:Episode {episode_id: $episode_id})
+                    RETURN e
+                    """,
+                    episode_id=episode_id
+                )
+                record = result.single()
+                if record:
+                    e = record["e"]
+                    # Parse metadata JSON
+                    metadata = json.loads(e.get("metadata", "{}"))
+                    return {
+                        "id": e["episode_id"],
+                        "prefix": e.get("prefix"),
+                        "origin_as": e.get("origin_as"),
+                        "start_time": e.get("start_time"),
+                        "end_time": e.get("end_time"),
+                        "max_severity": e.get("max_severity"),
+                        "score": e.get("score"),
+                        "event_count": e.get("event_count"),
+                        "metadata": metadata,
+                        "status": e.get("status", "OPEN")
+                    }
+            return None
+        except Exception as e:
+            logging.error(f"Error retrieving episode by ID: {e}")
+            return None
+
+    def get_active_episodes(self) -> List[Dict]:
+        """
+        Retrieve all active (OPEN) episodes.
+        """
+        try:
+            with self.driver.session() as session:
+                result = session.run("""
+                    MATCH (e:Episode)
+                    WHERE e.status = 'OPEN'
+                    RETURN e
+                    ORDER BY e.start_time DESC
+                    """)
+                episodes = []
+                for record in result:
+                    e = record["e"]
+                    metadata = json.loads(e.get("metadata", "{}"))
+                    episodes.append({
+                        "id": e["episode_id"],
+                        "prefix": e.get("prefix"),
+                        "origin_as": e.get("origin_as"),
+                        "start_time": e.get("start_time"),
+                        "end_time": e.get("end_time"),
+                        "max_severity": e.get("max_severity"),
+                        "score": e.get("score"),
+                        "event_count": e.get("event_count"),
+                        "metadata": metadata,
+                        "status": e.get("status", "OPEN")
+                    })
+                return episodes
+        except Exception as e:
+            logging.error(f"Error retrieving active episodes: {e}")
+            return []
+
+    def get_episodes_by_prefix(self, prefix: str, limit: int = 20) -> List[Dict]:
+        """
+        Retrieve episodes for a given prefix.
+        """
+        try:
+            with self.driver.session() as session:
+                result = session.run("""
+                    MATCH (e:Episode)
+                    WHERE e.prefix = $prefix
+                    RETURN e
+                    ORDER BY e.start_time DESC
+                    LIMIT $limit
+                    """,
+                    prefix=prefix,
+                    limit=limit
+                )
+                episodes = []
+                for record in result:
+                    e = record["e"]
+                    metadata = json.loads(e.get("metadata", "{}"))
+                    episodes.append({
+                        "id": e["episode_id"],
+                        "prefix": e.get("prefix"),
+                        "origin_as": e.get("origin_as"),
+                        "start_time": e.get("start_time"),
+                        "end_time": e.get("end_time"),
+                        "max_severity": e.get("max_severity"),
+                        "score": e.get("score"),
+                        "event_count": e.get("event_count"),
+                        "metadata": metadata,
+                        "status": e.get("status", "OPEN")
+                    })
+                return episodes
+        except Exception as e:
+            logging.error(f"Error retrieving episodes by prefix: {e}")
+            return []

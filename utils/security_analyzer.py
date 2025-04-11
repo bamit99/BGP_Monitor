@@ -30,6 +30,7 @@ from utils.as_lookup import ASLookup # Added import
 from utils.config_manager import config_manager # Import shared config manager
 from utils.anomaly_detector import AnomalyDetector # Import ML detector
 from utils.notification_manager import send_email_alert # Import email function
+from utils.episode_manager import get_episode_manager  # Import episode manager
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -497,7 +498,7 @@ class SecurityAlertLogger:
                 ])
 
     def log_alert(self, alert, db_manager=None):
-        """Log alert using standard logging, and optionally to CSV/DB."""
+        """Log alert using standard logging, and optionally to CSV/DB and episode aggregation."""
 
         # --- Log using standard Python logging ---
         severity = alert.get('severity', 'UNKNOWN').upper()
@@ -540,6 +541,16 @@ class SecurityAlertLogger:
             except Exception as e:
                 logger.error(f"Failed to log alert to database: {e}")
         # --------------------------------------
+
+        # --- Episode Aggregation ---
+        try:
+            episode_manager = get_episode_manager(db_manager)
+            episode = episode_manager.process_event(alert)
+            if episode:
+                logger.info(f"Alert aggregated into episode: {episode['id']} (score={episode['score']}, count={episode['event_count']})")
+        except Exception as e:
+            logger.error(f"Failed to aggregate alert into episode: {e}")
+        # --------------------------
 
         # --- Send Email Alert ---
         try:
