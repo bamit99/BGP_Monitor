@@ -44,6 +44,8 @@ cd bgp-monitor
 
 2. Install required dependencies:
 ```bash
+conda create -n bgpmon python=3.11
+conda activate bgpmon
 pip install -r requirements.txt
 ```
 
