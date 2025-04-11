@@ -24,8 +24,10 @@ BGP Monitor is a tool for collecting, analyzing, and monitoring BGP routing upda
   - **Path Prepending Detection:** Identifies excessive AS path prepending based on configurable thresholds.
   - **Critical Infrastructure Monitoring:** Allows defining critical prefixes for heightened alert severity.
   - **Known Bad Actor Monitoring:** Flags updates involving ASNs listed as known bad actors.
+  - **Advanced Event/Episode Aggregation:** Groups related security alerts into "episodes" based on prefix, origin AS, and time window. Each episode is scored, enriched with metadata (hijack scope, subtype, AS path edit distance), and stored in Neo4j for high-level incident analysis.
 - Configurable security heuristics (thresholds, severity) via `config/app_settings.json`.
 - Detailed security alert logging to standard logging, daily CSV files (`data/security_alerts/`), and Neo4j.
+- **Episode Storage and Analytics:** All episodes are stored in the Neo4j database and can be queried for ongoing or recent security incidents. (See "Episode Aggregation" below.)
 - Configurable Syslog forwarding with JSON formatting for SIEM integration.
 - GUI panel for viewing, sorting, and exporting security alerts.
 - Database connection status indicator and entry count display.
@@ -157,6 +159,25 @@ The application saves GUI state (selected region, collectors, AS filters) to thi
 
 *If `app_settings.json` is missing, it will be created with default values upon first run.*
 
+## Episode Aggregation
+
+### What is an Episode?
+
+An **episode** is a group of related BGP security alerts (e.g., hijacks, leaks, RPKI invalids) that affect the same prefix and origin AS within a configurable time window. Instead of treating every alert as an isolated event, the system aggregates them into episodes, providing a higher-level view of ongoing or recent security incidents.
+
+- **Scoring:** Each episode is assigned a score based on the severity and type of its constituent alerts, with configurable multipliers for critical prefixes, origin changes, and RPKI invalids.
+- **Metadata:** Episodes are enriched with metadata such as hijack scope, subtype (e.g., origin change, more-specific), AS path edit distance, and affected ASNs.
+- **Storage:** Episodes are stored in the Neo4j database and can be queried for analytics, reporting, or incident review.
+- **Viewing Episodes:** Currently, episodes can be listed using a CLI command (see below). Future versions may add a GUI panel for episodes.
+
+#### Example: Listing Active Episodes
+
+To view active episodes in the database, run:
+```bash
+python -c "from utils.db_manager import BGPDatabaseManager; import config.database_config as db_config; db = BGPDatabaseManager(db_config.NEO4J_CONFIG['uri'], db_config.NEO4J_CONFIG['username'], db_config.NEO4J_CONFIG['password']); print(db.get_active_episodes())"
+```
+This will print a list of episode summaries, each with fields like prefix, origin AS, time window, max severity, score, event count, and metadata.
+
 ## Usage
 
 1.  **Configure**: Set up database connection (`Connect DB` button or `config/db_config.json`) and Syslog (`Syslog Settings` button or `config/app_settings.json`) if needed. Review `config/security_config.json` and `config/app_settings.json` for security parameters and heuristics.
@@ -189,7 +210,8 @@ The application saves GUI state (selected region, collectors, AS filters) to thi
   - `connection_manager.py`: (Potentially used for managing WebSocket connections - verify usage).
 - **`utils/`**: Utility modules providing various functionalities.
   - `security_analyzer.py`: Core logic for analyzing BGP updates for security threats (hijacks, leaks, RPKI, etc.). Includes `SecurityAlertLogger`.
-  - `db_manager.py`: Handles all interactions with the Neo4j database (storing updates, alerts, querying data).
+  - `episode_manager.py`: Aggregates security alerts into episodes, scores them, and manages episode metadata and storage.
+  - `db_manager.py`: Handles all interactions with the Neo4j database (storing updates, alerts, episodes, querying data).
   - `config_manager.py`: Centralized loading and saving of configuration files (`app_settings.json`, `gui_settings.json`, `db_config.json`, `security_config.json`).
   - `bgp_utils.py`: Helper functions for BGP data, including loading and querying AS relationship data.
   - `as_lookup.py`: Fetches AS information (name, country, etc.) from external APIs.

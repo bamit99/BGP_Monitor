@@ -8,6 +8,19 @@
             "protocol": "UDP"
         }
     },
+    "episode_management": {
+        "enabled": true,
+        "time_window_minutes": 60,
+        "max_events_per_episode": 100,
+        "severity_scores": {
+            "LOW": 1,
+            "MEDIUM": 5,
+            "HIGH": 10
+        },
+        "critical_prefix_multiplier": 2.0,
+        "origin_change_multiplier": 1.5,
+        "rpki_invalid_multiplier": 1.5
+    },
     "security_analysis": {
         "heuristics": {
             "long_path": {
