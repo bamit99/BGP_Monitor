@@ -187,7 +187,7 @@ This will print a list of episode summaries, each with fields like prefix, origi
 1.  **Configure**: Set up database connection (`Connect DB` button or `config/db_config.json`) and Syslog (`Syslog Settings` button or `config/app_settings.json`) if needed. Review `config/security_config.json` and `config/app_settings.json` for security parameters and heuristics.
 2.  **Select Region & Collectors**: Choose a geographic region and one or more RIPE RIS collectors from the GUI lists. Collector locations are displayed.
 3.  **Set AS Filters (Optional)**: Enter AS numbers (e.g., "AS64512" or "64512") in the "AS Number Filtering" section and click "Add Filter". Only updates whose AS path contains at least one of the filtered ASNs will be processed. Use "Remove Filter" or "Clear All" to manage filters.
-4.  **AS Info (Optional)**: Select an AS number in the filter list and click "AS Info" to look up details about that AS using multiple sources, including PeeringDB for richer context (e.g., network type, IX/facility counts).
+4.  **AS Info (Optional)**: Select an AS number in the filter list and click "AS Info" to look up details about that AS.
 5.  **Start Monitoring**: Click "Start Monitoring". The button changes to "Stop Monitoring".
 6.  **View Updates**: Real-time BGP updates (announcements and withdrawals) matching filters appear in the "BGP Updates" log panel.
 7.  **Monitor Security Alerts & Episodes**:
@@ -251,8 +251,6 @@ Key dependencies (see `requirements.txt` for the full list and specific versions
 - `aiohttp`, `asyncio`: Core libraries for asynchronous operations (used by `websockets`).
 - `pathlib`: Modern path manipulation (standard library).
 - `ipaddress`: For IP address and network manipulation (standard library).
-- `peeringdb`: For querying PeeringDB for ASN details.
-- `Django`: Required dependency for the `peeringdb` library.
 - `tkinter`: GUI framework (standard library).
 
 *Note: `tkinter` is part of the standard Python library but might require separate installation on some Linux distributions (e.g., `sudo apt-get install python3-tk`).*

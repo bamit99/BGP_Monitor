@@ -23,12 +23,6 @@ class ASLookup:
         })
         logging.basicConfig(level=logging.INFO)
         self.logger = logging.getLogger(__name__)
-        # Initialize PeeringDB client
-        try:
-            self.pdb_client = peeringdb.PeeringDB()
-        except Exception as e:
-            self.logger.error(f"Failed to initialize PeeringDB client: {e}")
-            self.pdb_client = None # Set to None if initialization fails
 
     def _load_cache(self):
         """Load AS cache from file."""
@@ -53,43 +47,40 @@ class ASLookup:
         return False
 
     def lookup_peeringdb(self, asn):
-        """Look up AS information using the peeringdb library."""
-        if not self.pdb_client:
-            self.logger.warning("PeeringDB client not initialized, skipping lookup.")
-            return None
+        """Look up AS information using PeeringDB API."""
         try:
-            asn_int = int(str(asn).upper().replace('AS', ''))
-            # Fetch network details by ASN
-            net = self.pdb_client.net(asn=asn_int) # Use the library call
+            asn = str(asn).upper().replace('AS', '')
+            url = f"https://www.peeringdb.com/api/net?asn={asn}"
+            response = self.session.get(url)
+            response.raise_for_status()
+            data = response.json()
 
-            if net and net.one(): # Check if a single network was found
-                net_info = net.one()
-                # Fetch related IX and facility counts
-                ix_count = len(self.pdb_client.netixlan(asn=asn_int))
-                fac_count = len(self.pdb_client.netfac(asn=asn_int))
-
+            if data.get('data') and len(data['data']) > 0:
+                net_info = data['data'][0]
                 result = {
-                    'pdb_asn': net_info.asn, # Use field names from library object
-                    'pdb_name': net_info.name,
-                    'pdb_website': net_info.website,
-                    'pdb_traffic': net_info.info_traffic,
-                    'pdb_type': net_info.info_type,
-                    'pdb_ix_count': ix_count,
-                    'pdb_fac_count': fac_count,
-                    'pdb_created': net_info.created.isoformat() if net_info.created else None,
-                    'source_pdb': 'PeeringDB Library', # Indicate source
-                    'timestamp_pdb': time.time() # Timestamp this specific lookup
+                    'asn': asn, # Keep original keys for compatibility
+                    'name': net_info.get('name', ''),
+                    'description': net_info.get('notes', ''), # Use 'notes' as description
+                    'website': net_info.get('website', ''),
+                    'country': net_info.get('country', ''), # PeeringDB has country
+                    'city': net_info.get('city', ''),
+                    'state': net_info.get('state', ''),
+                    'traffic_levels': net_info.get('info_traffic', ''),
+                    'policy_general': net_info.get('policy_general', ''),
+                    'policy_locations': net_info.get('policy_locations', ''),
+                    'policy_ratio': net_info.get('policy_ratio', ''),
+                    'info_scope': net_info.get('info_scope', ''),
+                    'info_type': net_info.get('info_type', ''),
+                    'source': 'PeeringDB API', # Indicate source
+                    'timestamp': time.time()
                 }
-                # Note: We don't update the main self.as_cache here directly,
-                # let get_as_info handle merging and caching the combined result.
+                # Update cache directly here as before
+                self.as_cache[asn] = result
+                self._save_cache()
                 return result
-            else:
-                self.logger.info(f"AS{asn_int} not found in PeeringDB.")
-                return None # Return None if not found
-
         except Exception as e:
-            self.logger.error(f"PeeringDB library lookup error for AS{asn}: {str(e)}")
-            return None
+            self.logger.error(f"PeeringDB lookup error for AS{asn}: {str(e)}")
+        return None
 
     def lookup_radb(self, asn):
         """Look up AS information using RADB whois."""
@@ -362,40 +353,37 @@ class ASLookup:
             (self.lookup_ripe, "RIPE")
         ]
         
-        all_info = {'asn': str(asn).upper().replace('AS', '')} # Start with the ASN itself
-        found_sources = []
-
+        all_info = {}
         for lookup_func, source_name in sources:
             try:
                 result = lookup_func(asn)
                 if result:
                     self.logger.info(f"Found AS{asn} information in {source_name}")
-                    found_sources.append(source_name)
-                    # Merge results, prioritizing certain fields if needed,
-                    # or simply updating (later sources might overwrite earlier ones for same keys)
-                    # The new PeeringDB lookup uses 'pdb_' prefixes, so it won't overwrite
-                    # standard fields like 'name', 'country' from other sources unless we explicitly map them.
+                    # Merge information from different sources
+                    # Original simple update logic is sufficient now
                     all_info.update(result)
             except Exception as e:
                 self.logger.error(f"Error looking up AS{asn} in {source_name}: {str(e)}")
-                continue # Continue to next source even if one fails
+                continue
 
-        # Check if we found anything beyond the initial ASN
-        if len(all_info) > 1:
-            all_info['sources_queried'] = [s[1] for s in sources] # List all attempted sources
-            all_info['sources_found'] = found_sources # List sources that returned data
-            all_info['timestamp_combined'] = time.time() # Timestamp of the combined result creation
-            # Ensure standard fields like 'name' and 'country' are present if found by any source
-            # (PeeringDB lookup currently uses pdb_name, others might use 'name')
-            if 'pdb_name' in all_info and 'name' not in all_info:
-                 all_info['name'] = all_info['pdb_name'] # Use PeeringDB name as default if no other name found
+        if all_info:
+            # Use the source from the last successful lookup, or mark as multiple
+            # (The original PeeringDB lookup set source='PeeringDB API')
+            # Let's simplify and just mark as multiple if more than one source contributed potentially
+            # Or rely on the 'source' key from the last successful update in all_info
+            if 'source' not in all_info: # Add a generic source if none was set by lookups
+                 all_info['source'] = "Multiple Sources / Unknown"
 
-            self.as_cache[str(asn).upper().replace('AS', '')] = all_info # Cache using the cleaned ASN string
+            # Use the timestamp from the last successful lookup
+            if 'timestamp' not in all_info:
+                 all_info['timestamp'] = time.time() # Add timestamp if none was set
+
+            self.as_cache[str(asn).upper().replace('AS', '')] = all_info # Cache using cleaned ASN
             self._save_cache()
             return all_info
-        else: # Only contains the initial ASN key
-            self.logger.warning(f"No information found for AS{asn} from any source.")
-            return None
+
+        self.logger.warning(f"No information found for AS{asn}")
+        return None
 
     def bulk_lookup(self, asn_list):
         """Look up multiple AS numbers efficiently."""

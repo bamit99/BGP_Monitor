@@ -37,6 +37,9 @@ class BGPMonitorGUI:
         self.root.title("BGP Monitor")
         self.root.geometry("1000x800")  # Increased width for security panel
 
+        # Initial App Log Message
+        # Note: app_log_text widget doesn't exist yet, log later in init
+
         # --- Menu Bar ---
         self.menu_bar = tk.Menu(root)
         root.config(menu=self.menu_bar)
@@ -77,10 +80,20 @@ class BGPMonitorGUI:
 
         # Create frames for each tab
         self.alerts_tab_frame = ttk.Frame(self.notebook)
-        self.episodes_tab_frame = ttk.Frame(self.notebook) # Frame for future episodes tab
+        self.episodes_tab_frame = ttk.Frame(self.notebook)
+        self.app_log_tab_frame = ttk.Frame(self.notebook) # Frame for application log
 
         self.notebook.add(self.alerts_tab_frame, text='Security Alerts')
         self.notebook.add(self.episodes_tab_frame, text='Episodes')
+        self.notebook.add(self.app_log_tab_frame, text='Application Log')
+
+        # --- Create Application Log Panel ---
+        app_log_frame = ttk.LabelFrame(self.app_log_tab_frame, text="Application Log")
+        app_log_frame.pack(fill="both", expand=True, padx=5, pady=5)
+        self.app_log_text = scrolledtext.ScrolledText(app_log_frame, wrap=tk.WORD, height=15) # Use self.
+        self.app_log_text.pack(fill="both", expand=True, padx=5, pady=5)
+        self.app_log_text.config(state=tk.DISABLED) # Make read-only initially
+        # ------------------------------------
 
         self.filtered_as_numbers = set()
         self.data_manager = DataManager("data")
@@ -171,6 +184,9 @@ class BGPMonitorGUI:
 
         # Initial population of episodes display
         self.refresh_episodes_display()
+
+        # Log GUI initialization complete
+        self.log_app_message("GUI Initialized Successfully.")
 
     def _schedule_episode_cleanup(self):
         """Handles the periodic execution of episode cleanup."""
@@ -1546,6 +1562,27 @@ class BGPMonitorGUI:
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save RPKI settings: {e}", parent=window)
             logging.error(f"Error saving RPKI config: {e}", exc_info=True) # Add traceback info
+    # ---------------------------
+
+    # --- Application Log Method ---
+    def log_app_message(self, message):
+        """Appends a message to the Application Log tab."""
+        if hasattr(self, 'app_log_text'):
+            try:
+                # Ensure widget is enabled for writing
+                self.app_log_text.config(state=tk.NORMAL)
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                self.app_log_text.insert(tk.END, f"{timestamp} - {message}\n")
+                self.app_log_text.see(tk.END) # Scroll to the end
+                # Disable writing again
+                self.app_log_text.config(state=tk.DISABLED)
+            except Exception as e:
+                # Fallback to console if GUI logging fails
+                print(f"APP LOG FALLBACK: {timestamp} - {message}")
+                print(f"GUI Log Error: {e}")
+        else:
+             # Fallback if called before widget exists
+             print(f"APP LOG (Pre-Init): {message}")
     # ---------------------------
 
 # End of BGPMonitorGUI class definition
