@@ -21,7 +21,7 @@ BGP Monitor is a tool for collecting, analyzing, and monitoring BGP routing upda
 - Advanced security analysis:
   - **BGP Hijacking Detection:** Monitors origin AS changes using a prefix origin cache. Detects suspicious more-specific announcements of critical prefixes. Flags announcements from known bad actors.
   - **Route Leak Detection:** Implements valley-free path validation using AS relationship data (`data/as_relationships.txt.bz2`). Detects suspiciously long AS paths and paths containing private ASNs.
-  - **RPKI Validation:** Validates announcements against RPKI data using the RIPEstat Validator API.
+  - **RPKI Validation:** Validates announcements against RPKI data, prioritizing a configured local validator (e.g., Routinator via HTTP API) and falling back to the RIPEstat API.
   - **Path Prepending Detection:** Identifies excessive AS path prepending based on configurable thresholds.
   - **Critical Infrastructure Monitoring:** Allows defining critical prefixes for heightened alert severity.
   - **Known Bad Actor Monitoring:** Flags updates involving ASNs listed as known bad actors.
@@ -159,6 +159,7 @@ The application saves GUI state (selected region, collectors, AS filters) to thi
 - **`security_analysis.heuristics.*.enabled`**: Enable or disable specific heuristic checks (e.g., `long_path`, `prepending`, `more_specific`).
 - **`security_analysis.heuristics.*.threshold`**: Adjust detection thresholds (e.g., max path length for `long_path`, repetition count for `prepending`, prefix length difference for `more_specific`).
 - **`security_analysis.heuristics.*.severity`**: Set the default alert severity ("LOW", "MEDIUM", "HIGH") if an alert is triggered *solely* by that specific heuristic. The final alert severity is the highest severity among all triggered reasons.
+- **`rpki.local_validator_url`**: (Optional) URL of a local RPKI validator's HTTP API (e.g., Routinator's `/api/v1/validity`). If set (e.g., `"http://localhost:8323"`), the tool will query this validator first for RPKI status. If `null` or the query fails, it falls back to the RIPEstat API.
 
 *If `app_settings.json` is missing, it will be created with default values upon first run.*
 

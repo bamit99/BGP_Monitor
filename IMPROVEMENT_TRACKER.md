@@ -8,8 +8,8 @@ This file tracks suggested improvements for the BGP security monitoring capabili
     *   **Description:** Replace basic route leak checks with validation against reliable AS relationship data (e.g., CAIDA ASRank) for accurate valley-free routing checks. **(Framework implemented; requires data file)**
     *   **Impact:** High (Crucial for reliable leak detection).
 
-- [ ] **Deploy Local RPKI Validator:**
-    *   **Description:** Integrate with a local RPKI Relying Party cache (e.g., Routinator, OctoRPKI) instead of relying solely on external APIs.
+- [x] **Deploy Local RPKI Validator:**
+    *   **Description:** Integrate with a local RPKI Relying Party cache (e.g., Routinator, OctoRPKI) instead of relying solely on external APIs. **(Implemented support for querying validator via HTTP API; requires user setup & config)**
     *   **Impact:** High (Essential for performance, reliability, and avoiding rate limits).
 
 - [ ] **Add Internet Routing Registry (IRR) Checks:**
