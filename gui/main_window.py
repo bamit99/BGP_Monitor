@@ -776,12 +776,23 @@ class BGPMonitorGUI:
         def display_result(info):
             if info:
                 info_str = f"AS{asn_to_lookup} Information:\n\n"
-                info_str += f"Name: {info.get('name', 'N/A')}\n"
+                # General Info (prioritize non-PDB if available, fallback to PDB)
+                info_str += f"Name: {info.get('name', info.get('pdb_name', 'N/A'))}\n"
                 info_str += f"Country: {info.get('country', 'N/A')}\n"
                 info_str += f"Description: {info.get('description', 'N/A')}\n"
-                info_str += f"Website: {info.get('website', 'N/A')}\n"
-                info_str += f"Looking Glass: {info.get('looking_glass', 'N/A')}\n"
-                info_str += f"Abuse Contact: {info.get('abuse_contact', 'N/A')}\n"
+                info_str += f"Website: {info.get('website', info.get('pdb_website', 'N/A'))}\n" # Use PDB website if general one missing
+                info_str += f"Looking Glass: {info.get('looking_glass', 'N/A')}\n" # No PDB equivalent
+                info_str += f"Abuse Contact: {info.get('abuse_contact', 'N/A')}\n" # No PDB equivalent
+                info_str += "\n--- PeeringDB Info ---\n"
+                info_str += f"  PDB Name: {info.get('pdb_name', 'N/A')}\n"
+                info_str += f"  Network Type: {info.get('pdb_type', 'N/A')}\n"
+                info_str += f"  Traffic Levels: {info.get('pdb_traffic', 'N/A')}\n"
+                info_str += f"  IX Count: {info.get('pdb_ix_count', 'N/A')}\n"
+                info_str += f"  Facility Count: {info.get('pdb_fac_count', 'N/A')}\n"
+                info_str += f"  PDB Created: {info.get('pdb_created', 'N/A')}\n"
+                info_str += "\n--- Source Info ---\n"
+                info_str += f"  Sources Found: {', '.join(info.get('sources_found', ['N/A']))}\n"
+                info_str += f"  Result Timestamp: {datetime.fromtimestamp(info.get('timestamp_combined', 0)).isoformat() if info.get('timestamp_combined') else 'N/A'}\n"
                 messagebox.showinfo(f"AS{asn_to_lookup} Info", info_str)
             else:
                 messagebox.showwarning("Not Found", f"Information for AS{asn_to_lookup} not found.")

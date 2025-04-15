@@ -40,6 +40,6 @@ This file tracks suggested improvements for the BGP security monitoring capabili
     *   **Description:** Investigate and implement optimizations (batching, async checks, sampling) if needed for high-volume BGP feeds.
     *   **Impact:** Medium (Depends on observed performance with real-world data).
 
-- [ ] **Integrate PeeringDB Data:**
-    *   **Description:** Query PeeringDB (via API or data dump) to validate potential peer-to-peer relationships seen in BGP paths and gather richer context about ASNs (IXP presence, facility info, contacts). Complements CAIDA data.
+- [x] **Integrate PeeringDB Data:**
+    *   **Description:** Query PeeringDB (via API or data dump) to validate potential peer-to-peer relationships seen in BGP paths and gather richer context about ASNs (IXP presence, facility info, contacts). Complements CAIDA data. **(AS Info lookup implemented; path validation pending)**
     *   **Impact:** Medium (Enhances validation of peering links and provides operational context).
