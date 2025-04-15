@@ -385,9 +385,19 @@ class RPKIValidator:
     """RPKI validation using RIPE Validator API."""
 
     def __init__(self):
-        self.validator_url = "https://stat.ripe.net/data/rpki-validation/data.json"
+        self.ripestat_validator_url = "https://stat.ripe.net/data/rpki-validation/data.json" # Rename for clarity
         self.cache = {}  # Simple cache for validation results
         self.cache_duration = timedelta(hours=1)
+        # Load local validator URL from global APP_SETTINGS
+        rpki_config = APP_SETTINGS.get("rpki", {})
+        self.local_validator_url = rpki_config.get("local_validator_url")
+        if self.local_validator_url:
+            logger.info(f"Local RPKI validator configured at: {self.local_validator_url}")
+        else:
+            logger.info("No local RPKI validator configured, will use RIPEstat API.")
+        # Use the shared requests session if available, or create one
+        self.session = requests.Session()
+        self.session.headers.update({'User-Agent': 'BGPMonitor/1.0', 'Accept': 'application/json'})
 
     def validate(self, prefix: str, origin_as: int) -> RPKIValidationResult:
         """
@@ -400,49 +410,117 @@ class RPKIValidator:
         Returns:
             RPKIValidationResult with validation state and details
         """
-        try:
-            # Check cache first
-            cache_key = f"{prefix}_{origin_as}"
-            if cache_key in self.cache:
-                result, timestamp = self.cache[cache_key]
-                if datetime.now() - timestamp < self.cache_duration:
-                    return result
+        # Check cache first
+        cache_key = f"{prefix}_{origin_as}"
+        if cache_key in self.cache:
+            cached_result, timestamp = self.cache[cache_key]
+            if datetime.now() - timestamp < self.cache_duration:
+                # logger.debug(f"RPKI cache hit for {prefix} / {origin_as}")
+                return cached_result
 
-            # Query RIPE validator
-            params = {
-                "prefix": prefix,
-                "resource": str(origin_as)  # Use 'resource' and just the number
-            }
-            response = requests.get(self.validator_url, params=params, timeout=5)
-            response.raise_for_status()
-            data = response.json()
+        result = None
+        source = "UNKNOWN"
 
-            # Parse validation result from RIPEstat API
-            api_data = data.get("data", {}) # RIPEstat nests results under 'data'
-            state_raw = api_data.get("status", "unknown").upper()
-            reason = api_data.get("description")
+        # --- Try Local Validator First ---
+        if self.local_validator_url:
+            try:
+                # Construct Routinator API URL (adjust if using a different validator)
+                # Ensure no double slashes if base URL ends with /
+                base_url = self.local_validator_url.rstrip('/')
+                local_api_url = f"{base_url}/api/v1/validity/{origin_as}/{prefix}"
 
-            # Map RIPEstat status to our internal states
-            if state_raw == "VALID":
-                state = "VALID"
-            elif state_raw in ["INVALID_ASN", "INVALID_LENGTH"]:
-                state = "INVALID"
-            else: # Includes "UNKNOWN" and any other unexpected values
-                state = "UNKNOWN"
+                logger.debug(f"Querying local RPKI validator: {local_api_url}")
+                response = self.session.get(local_api_url, timeout=5) # Use shared session
+                response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
+                data = response.json()
 
-            result = RPKIValidationResult(
-                state=state,
-                reason=reason,
-                roa_prefixes=None # This API doesn't provide ROA details in the same way
-            )
+                # Parse Routinator response (adjust parsing based on actual validator response structure)
+                validity_info = data.get("validated_route", {}).get("validity", {})
+                state_raw = validity_info.get("state", "not-found").lower() # Routinator uses lowercase
+                reason = validity_info.get("reason")
+                description = validity_info.get("description") # Routinator might provide description
+                vrps = data.get("vrps", {}) # Routinator provides VRP info
 
-            # Cache the result
+                # Map Routinator state to our internal states
+                if state_raw == "valid":
+                    state = "VALID"
+                elif state_raw == "invalid":
+                    state = "INVALID"
+                else: # Includes "not-found"
+                    state = "UNKNOWN"
+
+                # Combine reason/description
+                full_reason = f"{reason}: {description}" if reason and description else reason or description
+
+                result = RPKIValidationResult(
+                    state=state,
+                    reason=full_reason,
+                    # Store VRPs if needed later (optional)
+                    roa_prefixes=vrps.get("matched", []) + vrps.get("unmatched_as", []) + vrps.get("unmatched_length", [])
+                )
+                source = "Local Validator"
+                logger.debug(f"Local RPKI result for {prefix}/{origin_as}: {state}")
+
+            except requests.exceptions.RequestException as e:
+                logger.warning(f"Local RPKI validator query failed ({type(e).__name__}), falling back to RIPEstat: {e}")
+                # Fall through to RIPEstat logic
+            except Exception as e:
+                logger.error(f"Error parsing local RPKI validator response: {e}", exc_info=True)
+                # Fall through to RIPEstat logic
+
+        # --- Fallback to RIPEstat API ---
+        if result is None: # If local query wasn't attempted or failed
+            try:
+                logger.debug(f"Querying RIPEstat RPKI validator for {prefix}/{origin_as}")
+                params = {
+                    "prefix": prefix,
+                    "resource": str(origin_as)
+                }
+                response = self.session.get(self.ripestat_validator_url, params=params, timeout=10) # Use shared session
+                response.raise_for_status()
+                data = response.json()
+
+                api_data = data.get("data", {})
+                state_raw = api_data.get("status", "unknown").upper()
+                reason = api_data.get("description")
+
+                if state_raw == "VALID":
+                    state = "VALID"
+                elif state_raw in ["INVALID_ASN", "INVALID_LENGTH"]:
+                    state = "INVALID"
+                else:
+                    state = "UNKNOWN"
+
+                result = RPKIValidationResult(
+                    state=state,
+                    reason=reason,
+                    roa_prefixes=None # RIPEstat API doesn't provide detailed VRPs here
+                )
+                source = "RIPEstat API"
+                logger.debug(f"RIPEstat RPKI result for {prefix}/{origin_as}: {state}")
+
+            except requests.exceptions.RequestException as e:
+                logger.error(f"RIPEstat RPKI validation query failed: {e}")
+                # Return UNKNOWN if both local and RIPEstat fail
+                result = RPKIValidationResult(state="UNKNOWN", reason=f"Validation query failed: {e}")
+                source = "Query Failed"
+            except Exception as e:
+                 logger.error(f"Error parsing RIPEstat RPKI response: {e}", exc_info=True)
+                 result = RPKIValidationResult(state="UNKNOWN", reason=f"Error parsing RIPEstat response: {e}")
+                 source = "Parse Error"
+
+
+        # --- Caching and Return ---
+        if result:
+            # Add source info to the result object itself (optional)
+            result.source = source
+            # Cache the final result
             self.cache[cache_key] = (result, datetime.now())
             return result
-
-        except Exception as e:
-            logger.error(f"RPKI validation error: {e}")
-            return RPKIValidationResult(state="UNKNOWN", reason=str(e))
+        else:
+            # Should not happen if error handling is correct, but as a fallback
+            logger.error("RPKI validation failed to produce a result.")
+            return RPKIValidationResult(state="UNKNOWN", reason="Internal validation error")
 
 # Initialize RPKI validator
 rpki_validator = RPKIValidator()

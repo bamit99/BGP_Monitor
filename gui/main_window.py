@@ -7,8 +7,9 @@ from datetime import datetime
 from src.bgp_monitor import BGPMonitor
 from src.connection_manager import ConnectionManager
 from utils.data_manager import DataManager
-from utils.analysis import BGPAnalyzer
+# from utils.analysis import BGPAnalyzer # BGPAnalyzer seems unused in this file
 from utils.as_lookup import ASLookup
+import logging # Import the logging module
 from config.collectors import get_collectors_by_region, get_all_regions, get_collector_location
 import json
 import re
@@ -23,6 +24,7 @@ from utils.db_manager import BGPDatabaseManager
 import config.database_config as db_config_module
 from utils.security_analyzer import SecurityAlertLogger, get_origin_as, check_suspicious_patterns # Import necessary functions
 from utils.episode_manager import get_episode_manager # Import episode manager factory
+from utils.security_analyzer import RPKIValidator # Import RPKIValidator
 import time
 
 class BGPMonitorGUI:
@@ -34,6 +36,16 @@ class BGPMonitorGUI:
         self.root = root
         self.root.title("BGP Monitor")
         self.root.geometry("1000x800")  # Increased width for security panel
+
+        # --- Menu Bar ---
+        self.menu_bar = tk.Menu(root)
+        root.config(menu=self.menu_bar)
+
+        # Help Menu
+        self.help_menu = tk.Menu(self.menu_bar, tearoff=0)
+        self.menu_bar.add_cascade(label="Help", menu=self.help_menu)
+        self.help_menu.add_command(label="About BGP Monitor", command=self.show_about)
+        # --- End Menu Bar ---
 
         # Initialize configuration manager
         # Use the shared config_manager instance
@@ -94,6 +106,9 @@ class BGPMonitorGUI:
         # Initialize Episode Manager (pass db_manager if available)
         self.episode_manager = get_episode_manager(db_manager=self.bgp_monitor.db_manager)
 
+        # Initialize RPKI Validator instance for the GUI
+        self.rpki_validator = RPKIValidator()
+
         # Initialize security alert logger (NOW we have episode_manager)
         self.alert_logger = SecurityAlertLogger(episode_manager=self.episode_manager)
 
@@ -134,6 +149,10 @@ class BGPMonitorGUI:
         # Add Syslog Settings button
         self.syslog_button = tk.Button(config_button_frame, text="Syslog Settings", command=self.open_syslog_config_window, width=15)
         self.syslog_button.pack(side=tk.LEFT, padx=5)
+
+        # Add RPKI Settings button
+        self.rpki_button = tk.Button(config_button_frame, text="RPKI Settings", command=self.open_rpki_config_window, width=15)
+        self.rpki_button.pack(side=tk.LEFT, padx=5)
         # ---------------------------
 
         # Add a label to display the count of Update entries
@@ -815,7 +834,7 @@ class BGPMonitorGUI:
         about_text = """
         BGP Monitor v1.1
 
-        Developed by: Amit Kumar Singh
+        Developed by: Amit Bhatnagar @ Amit.Bhatnagar@outlook.com
 
         This tool monitors BGP updates from RIPE RIS,
         analyzes them for security threats, and stores
@@ -1448,6 +1467,85 @@ class BGPMonitorGUI:
         except Exception as e:
             messagebox.showerror("Syslog Settings", f"An error occurred: {e}", parent=window)
             logging.error(f"Error saving syslog config: {e}")
+    # ---------------------------
+
+    # --- RPKI Configuration ---
+    def open_rpki_config_window(self):
+        """Open the RPKI configuration dialog."""
+        config_window = tk.Toplevel(self.root)
+        config_window.title("RPKI Validator Settings")
+        config_window.geometry("400x150")
+        config_window.transient(self.root) # Keep on top of main window
+        config_window.grab_set() # Modal behavior
+
+        main_frame = ttk.Frame(config_window, padding="10")
+        main_frame.pack(fill="both", expand=True)
+
+        # Load current setting
+        # Ensure app_settings is refreshed
+        self.app_settings = self.config_manager.load_app_settings()
+        current_rpki_settings = self.app_settings.get("rpki", {})
+        current_url = current_rpki_settings.get("local_validator_url", "") or "" # Handle null/None
+
+        # URL Entry
+        ttk.Label(main_frame, text="Local Validator URL (e.g., http://localhost:8323):").pack(pady=(0, 5))
+        url_var = tk.StringVar(value=current_url)
+        url_entry = ttk.Entry(main_frame, textvariable=url_var, width=50)
+        url_entry.pack(fill="x", expand=True)
+
+        # Button Frame
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(pady=(10, 0))
+
+        # Save Button
+        save_button = ttk.Button(
+            button_frame,
+            text="Save",
+            command=lambda: self.save_rpki_config(config_window, url_var.get())
+        )
+        save_button.pack(side=tk.LEFT, padx=5)
+
+        # Close Button
+        close_button = ttk.Button(button_frame, text="Close", command=config_window.destroy)
+        close_button.pack(side=tk.LEFT, padx=5)
+
+        config_window.wait_window() # Wait for dialog to close
+
+    def save_rpki_config(self, window, url):
+        """Save RPKI configuration."""
+        try:
+            # Basic validation: allow empty string or something that looks like a URL
+            url = url.strip()
+            if url and not (url.startswith("http://") or url.startswith("https://")):
+                 messagebox.showerror("Invalid URL", "URL must start with http:// or https://, or be empty.", parent=window)
+                 return
+
+            # Ensure app_settings is up-to-date before modifying
+            self.app_settings = self.config_manager.load_app_settings()
+
+            # Update settings dictionary
+            rpki_settings = self.app_settings.setdefault("rpki", {})
+            # Store empty string as null in JSON for consistency
+            rpki_settings["local_validator_url"] = url if url else None
+
+            # Save to file
+            if self.config_manager.save_app_settings(self.app_settings):
+                # Update the running RPKIValidator instance
+                if self.rpki_validator:
+                    self.rpki_validator.local_validator_url = url if url else None
+                    logging.info(f"Updated running RPKIValidator instance. New URL: {self.rpki_validator.local_validator_url}") # Use logging
+                else:
+                     logging.warning("RPKIValidator instance not found in GUI, cannot update running instance.") # Use logging
+
+                messagebox.showinfo("Success", "RPKI settings saved.", parent=window)
+                window.destroy()
+            else:
+                 messagebox.showerror("Error", "Failed to save RPKI settings.", parent=window)
+
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save RPKI settings: {e}", parent=window)
+            logging.error(f"Error saving RPKI config: {e}", exc_info=True) # Add traceback info
     # ---------------------------
 
 # End of BGPMonitorGUI class definition
