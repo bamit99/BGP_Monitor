@@ -12,7 +12,7 @@ import logging
 import datetime
 from typing import Dict, List, Optional, Any, Tuple, Set
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta # Ensure timedelta is imported
 import json
 import uuid
 from utils.config_manager import config_manager
@@ -333,26 +333,75 @@ class EpisodeManager:
         if not self.db_manager:
             return
         
-        # This is a placeholder - actual implementation depends on your DB schema
-        # active_episodes = self.db_manager.get_active_episodes()
-        # for episode_data in active_episodes:
-        #     episode = Episode(
-        #         episode_data['prefix'],
-        #         episode_data['origin_as'],
-        #         episode_data['start_time']
-        #     )
-        #     # Restore episode state
-        #     episode.id = episode_data['id']
-        #     episode.end_time = episode_data['end_time']
-        #     episode.max_severity = episode_data['max_severity']
-        #     episode.score = episode_data['score']
-        #     episode.event_count = episode_data['event_count']
-        #     episode.metadata = episode_data['metadata']
-        #     episode.status = episode_data['status']
-        #     
-        #     # Add to active episodes
-        #     key = (episode.prefix, episode.origin_as)
-        #     self.active_episodes[key] = episode
+        logger.info("Attempting to load active episodes from database...")
+        try:
+            active_episodes_data = self.db_manager.get_active_episodes()
+            loaded_count = 0
+            for episode_data in active_episodes_data:
+                try:
+                    # Convert Neo4j DateTime to Python datetime
+                    start_time_native = episode_data['start_time']
+                    if hasattr(start_time_native, 'to_native'):
+                        start_time_native = start_time_native.to_native()
+                    # Handle potential string fallback if stored incorrectly (less likely)
+                    elif isinstance(start_time_native, str):
+                         start_time_native = datetime.fromisoformat(start_time_native)
+                    else: # Add a fallback if type is unexpected
+                         logger.warning(f"Unexpected start_time type for episode {episode_data.get('id', 'N/A')}: {type(start_time_native)}. Using current time.")
+                         start_time_native = datetime.now() # Fallback
+
+                    # Create the episode instance
+                    episode = Episode(
+                        prefix=episode_data['prefix'],
+                        origin_as=episode_data['origin_as'],
+                        start_time=start_time_native # Use converted datetime
+                    )
+
+                    # Restore episode state from loaded data
+                    episode.id = episode_data['id']
+
+                    # Convert end_time
+                    end_time_native = episode_data.get('end_time') # Use get() for safety
+                    if end_time_native:
+                        if hasattr(end_time_native, 'to_native'):
+                            episode.end_time = end_time_native.to_native()
+                        elif isinstance(end_time_native, str):
+                             episode.end_time = datetime.fromisoformat(end_time_native)
+                        else:
+                             logger.warning(f"Unexpected end_time type for episode {episode.id}: {type(end_time_native)}. Using start time.")
+                             episode.end_time = start_time_native # Fallback if end_time is missing/invalid
+                    else:
+                         episode.end_time = start_time_native # Fallback if end_time is missing
+
+                    episode.max_severity = episode_data.get('max_severity', 'LOW') # Use get() with default
+                    episode.score = episode_data.get('score', 0) # Use get() with default
+                    episode.event_count = episode_data.get('event_count', 0) # Use get() with default
+                    episode.status = episode_data.get('status', 'OPEN') # Use get() with default
+
+                    # Restore metadata, converting lists back to sets where needed
+                    loaded_metadata = episode_data.get('metadata', {})
+                    if isinstance(loaded_metadata, dict): # Ensure metadata is a dict
+                         episode.metadata = loaded_metadata
+                         # Ensure keys exist before converting to set
+                         episode.metadata['affected_asns'] = set(episode.metadata.get('affected_asns', []))
+                         episode.metadata['affected_countries'] = set(episode.metadata.get('affected_countries', []))
+                    else:
+                         logger.warning(f"Invalid metadata format for episode {episode.id}, resetting.")
+                         episode.metadata = {'affected_asns': set(), 'affected_countries': set()} # Reset with empty sets
+
+                    # Add to active episodes dictionary
+                    key = (episode.prefix, episode.origin_as)
+                    self.active_episodes[key] = episode
+                    loaded_count += 1
+
+                except Exception as inner_e:
+                    logger.error(f"Failed to reconstruct episode from data {episode_data.get('id', 'N/A')}: {inner_e}", exc_info=True) # Add traceback
+                    continue # Skip this episode and try the next
+
+            logger.info(f"Successfully loaded {loaded_count} active episodes.")
+
+        except Exception as outer_e:
+            logger.error(f"Failed to retrieve active episodes from database: {outer_e}", exc_info=True) # Add traceback
     
     def process_event(self, event: Dict) -> Optional[Dict]:
         """
@@ -474,7 +523,55 @@ class EpisodeManager:
         
         # This is a placeholder - actual implementation depends on your DB schema
         # self.db_manager.store_episode(episode.to_dict(), final=final)
-    
+
+    def cleanup_old_episodes(self) -> None:
+        """
+        Periodically check active episodes and close those that have been inactive
+        (no new events added) for longer than the configured threshold.
+        """
+        cleanup_threshold_hours = EPISODE_CONFIG.get("cleanup_threshold_hours", 24) # Default to 24 hours
+        if not isinstance(cleanup_threshold_hours, (int, float)) or cleanup_threshold_hours <= 0:
+            logger.warning(f"Invalid cleanup_threshold_hours ({cleanup_threshold_hours}), using default 24.")
+            cleanup_threshold_hours = 24
+
+        cleanup_delta = timedelta(hours=cleanup_threshold_hours)
+        now = datetime.now()
+        closed_count = 0
+        episodes_to_close = [] # Collect episodes to close outside the loop
+
+        # Iterate over a copy of the values to allow modification during iteration
+        for episode in list(self.active_episodes.values()):
+            # Ensure end_time is a datetime object
+            end_time = episode.end_time
+            if not isinstance(end_time, datetime):
+                 # Attempt conversion if string, otherwise skip
+                 if isinstance(end_time, str):
+                     try:
+                         end_time = datetime.fromisoformat(end_time.replace('Z', '+00:00'))
+                     except ValueError:
+                         logger.warning(f"Skipping cleanup check for episode {episode.id} due to invalid end_time format: {episode.end_time}")
+                         continue
+                 else:
+                     logger.warning(f"Skipping cleanup check for episode {episode.id} due to unexpected end_time type: {type(episode.end_time)}")
+                     continue
+
+            if episode.status == "OPEN" and (now - end_time) > cleanup_delta:
+                logger.info(f"Closing inactive episode {episode.id} (prefix: {episode.prefix}, origin: {episode.origin_as}). Last event: {end_time}")
+                episodes_to_close.append(episode)
+
+        # Close the collected episodes
+        for episode in episodes_to_close:
+             try:
+                 self._close_episode(episode) # This handles DB update and removal from active_episodes
+                 closed_count += 1
+             except Exception as e:
+                 logger.error(f"Error closing episode {episode.id} during cleanup: {e}")
+
+        if closed_count > 0:
+            logger.info(f"Automated cleanup closed {closed_count} inactive episodes.")
+        # else:
+            # logger.debug("Automated cleanup: No inactive episodes found to close.")
+
     def get_active_episodes(self) -> List[Dict]:
         """
         Get all active episodes.

@@ -477,10 +477,11 @@ def check_rpki_validity(prefix: str, origin_as: Optional[int]) -> Tuple[bool, Li
 class SecurityAlertLogger:
     """Handles logging of security alerts to both database and CSV."""
 
-    def __init__(self, data_dir="data"):
+    def __init__(self, data_dir="data", episode_manager=None): # Add episode_manager parameter
         self.data_dir = Path(data_dir) / "security_alerts"
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.current_file = None
+        self.episode_manager = episode_manager # Store the instance
         self._init_csv()
 
     def _init_csv(self):
@@ -543,13 +544,16 @@ class SecurityAlertLogger:
         # --------------------------------------
 
         # --- Episode Aggregation ---
-        try:
-            episode_manager = get_episode_manager(db_manager)
-            episode = episode_manager.process_event(alert)
-            if episode:
-                logger.info(f"Alert aggregated into episode: {episode['id']} (score={episode['score']}, count={episode['event_count']})")
-        except Exception as e:
-            logger.error(f"Failed to aggregate alert into episode: {e}")
+        if self.episode_manager: # Check if an episode manager instance was provided
+            try:
+                # Use the stored instance
+                episode = self.episode_manager.process_event(alert)
+                if episode:
+                    logger.info(f"Alert aggregated into episode: {episode['id']} (score={episode['score']}, count={episode['event_count']})")
+            except Exception as e:
+                logger.error(f"Failed to aggregate alert into episode: {e}")
+        else:
+            logger.warning("Episode manager not configured, skipping episode aggregation.")
         # --------------------------
 
         # --- Send Email Alert ---

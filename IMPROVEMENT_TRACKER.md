@@ -32,8 +32,8 @@ This file tracks suggested improvements for the BGP security monitoring capabili
     *   **Description:** Develop a more robust way to manage critical lists (prefixes, ASNs) than just JSON files (e.g., GUI section, dedicated tool).
     *   **Impact:** Medium (Improves usability and maintainability).
 
-- [ ] **Implement Alert Correlation:**
-    *   **Description:** Group related low-level alerts into single, higher-priority incidents to reduce noise and improve focus. Integrate with incident response systems if possible.
+- [ ] **Implement Alert Correlation / Episode Management:**
+    *   **Description:** Group related low-level alerts into single, higher-priority incidents (episodes) to reduce noise and improve focus. Integrate with incident response systems if possible. **(Core aggregation logic, persistence loading, automated cleanup, and basic GUI tab/table implemented; dynamic updates/details view pending)**
     *   **Impact:** Medium (Improves operational efficiency).
 
 - [ ] **Optimize for Performance/Scalability:**
