@@ -15,5 +15,3 @@ ipaddress>=1.0.23
 python-dotenv>=1.0.0
 scikit-learn>=1.0 # Added for ML anomaly detection
 numpy>=1.20 # Often a dependency for scikit-learn
-peeringdb>=2.0 # Added for PeeringDB integration
-Django>=4.0 # Dependency for peeringdb library
