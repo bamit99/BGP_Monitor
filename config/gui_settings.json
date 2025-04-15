@@ -3,5 +3,7 @@
     "collectors": [
         "rrc01"
     ],
-    "as_filters": []
+    "as_filters": [
+        "AS8220"
+    ]
 }
