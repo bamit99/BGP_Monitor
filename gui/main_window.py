@@ -22,6 +22,7 @@ from utils.db_manager import BGPDatabaseManager
 # Keep the import for NEO4J_CONFIG if it's used elsewhere, or remove if not needed
 import config.database_config as db_config_module
 from utils.security_analyzer import SecurityAlertLogger, get_origin_as, check_suspicious_patterns # Import necessary functions
+from utils.episode_manager import get_episode_manager # Import episode manager factory
 import time
 
 class BGPMonitorGUI:
@@ -40,8 +41,7 @@ class BGPMonitorGUI:
         self.gui_settings = self.config_manager.load_gui_settings() # Load GUI specific settings
         self.app_settings = self.config_manager.load_app_settings() # Load app settings (incl. logging)
 
-        # Initialize security alert logger
-        self.alert_logger = SecurityAlertLogger()
+        # Moved alert_logger initialization down
 
         # Create main frame
         self.main_frame = ttk.Frame(root)
@@ -55,8 +55,20 @@ class BGPMonitorGUI:
         self.left_frame = ttk.Frame(self.paned_window, padding=5)
         self.paned_window.add(self.left_frame, weight=1) # Add left frame with weight
 
+        # Create right frame which will contain a notebook
         self.right_frame = ttk.Frame(self.paned_window, padding=5)
-        self.paned_window.add(self.right_frame, weight=1) # Add right frame with weight
+        self.paned_window.add(self.right_frame, weight=2) # Give right frame more initial weight
+
+        # Create the Notebook widget within the right frame
+        self.notebook = ttk.Notebook(self.right_frame)
+        self.notebook.pack(fill="both", expand=True)
+
+        # Create frames for each tab
+        self.alerts_tab_frame = ttk.Frame(self.notebook)
+        self.episodes_tab_frame = ttk.Frame(self.notebook) # Frame for future episodes tab
+
+        self.notebook.add(self.alerts_tab_frame, text='Security Alerts')
+        self.notebook.add(self.episodes_tab_frame, text='Episodes')
 
         self.filtered_as_numbers = set()
         self.data_manager = DataManager("data")
@@ -79,6 +91,12 @@ class BGPMonitorGUI:
             self.bgp_monitor = BGPMonitor(use_db=False)
             messagebox.showwarning("Database Connection", "Failed to initialize database connection. Some features may be unavailable.")
 
+        # Initialize Episode Manager (pass db_manager if available)
+        self.episode_manager = get_episode_manager(db_manager=self.bgp_monitor.db_manager)
+
+        # Initialize security alert logger (NOW we have episode_manager)
+        self.alert_logger = SecurityAlertLogger(episode_manager=self.episode_manager)
+
         # Initialize variables
         self.selected_collectors = set()
         self.is_monitoring = False
@@ -88,7 +106,8 @@ class BGPMonitorGUI:
 
         # Create the GUI components
         self.create_control_panel()
-        self.create_security_panel()
+        self.create_security_panel() # Creates the alerts tab content
+        self.create_episodes_panel() # Creates the episodes tab content
 
         # Set default region if available
         if self.get_all_regions():
@@ -127,6 +146,26 @@ class BGPMonitorGUI:
 
         # Load recent alerts
         self.load_recent_alerts()
+
+        # Schedule periodic episode cleanup (e.g., every hour = 3600000 ms)
+        self._schedule_episode_cleanup()
+
+        # Initial population of episodes display
+        self.refresh_episodes_display()
+
+    def _schedule_episode_cleanup(self):
+        """Handles the periodic execution of episode cleanup."""
+        try:
+            if self.episode_manager:
+                logging.info("Running periodic episode cleanup...")
+                self.episode_manager.cleanup_old_episodes()
+        except Exception as e:
+            logging.error(f"Error during scheduled episode cleanup: {e}")
+        finally:
+            # Reschedule itself (e.g., every 60 minutes)
+            cleanup_interval_ms = 60 * 60 * 1000 # 1 hour
+            self.root.after(cleanup_interval_ms, self._schedule_episode_cleanup)
+
 
     def create_control_panel(self):
         """Create the control panel with filters and buttons."""
@@ -249,9 +288,9 @@ class BGPMonitorGUI:
         self.log_text.tag_configure("filtered_as", foreground="green", font=('TkDefaultFont', 9, 'bold')) # Make filtered AS bold green
 
     def create_security_panel(self):
-        """Create the security alerts panel."""
-        # Create security frame
-        security_frame = ttk.LabelFrame(self.right_frame, text="Security Alerts")
+        """Create the security alerts panel within its dedicated tab frame."""
+        # Target the alerts_tab_frame instead of self.right_frame
+        security_frame = ttk.LabelFrame(self.alerts_tab_frame, text="Security Alerts")
         security_frame.pack(fill="both", expand=True, padx=5, pady=5)
 
         # Create alerts treeview
@@ -291,6 +330,109 @@ class BGPMonitorGUI:
         self.alerts_tree.tag_configure("HIGH", foreground="red")
         self.alerts_tree.tag_configure("MEDIUM", foreground="orange")
         self.alerts_tree.tag_configure("LOW", foreground="blue")
+
+    def create_episodes_panel(self):
+        """Create the episodes panel within its dedicated tab frame."""
+        # Target the episodes_tab_frame
+        episodes_frame = ttk.LabelFrame(self.episodes_tab_frame, text="Aggregated Episodes")
+        episodes_frame.pack(fill="both", expand=True, padx=5, pady=5)
+
+        # Define columns for the episodes treeview
+        episode_columns = ("ID", "Prefix", "Origin AS", "Start Time", "End Time", "Score", "Events", "Severity", "Status")
+        self.episodes_tree = ttk.Treeview(episodes_frame, columns=episode_columns, show="headings")
+
+        # Configure episode columns and headings
+        self.episodes_tree.heading("ID", text="ID")
+        self.episodes_tree.heading("Prefix", text="Prefix")
+        self.episodes_tree.heading("Origin AS", text="Origin AS")
+        self.episodes_tree.heading("Start Time", text="Start Time")
+        self.episodes_tree.heading("End Time", text="End Time")
+        self.episodes_tree.heading("Score", text="Score")
+        self.episodes_tree.heading("Events", text="Events")
+        self.episodes_tree.heading("Severity", text="Max Sev")
+        self.episodes_tree.heading("Status", text="Status")
+
+        # Set column widths (adjust as needed)
+        self.episodes_tree.column("ID", width=100, anchor='w')
+        self.episodes_tree.column("Prefix", width=150, anchor='w')
+        self.episodes_tree.column("Origin AS", width=80, anchor='center')
+        self.episodes_tree.column("Start Time", width=140, anchor='center')
+        self.episodes_tree.column("End Time", width=140, anchor='center')
+        self.episodes_tree.column("Score", width=60, anchor='e')
+        self.episodes_tree.column("Events", width=60, anchor='center')
+        self.episodes_tree.column("Severity", width=60, anchor='center')
+        self.episodes_tree.column("Status", width=60, anchor='center')
+
+        # Add scrollbar
+        ep_scrollbar = ttk.Scrollbar(episodes_frame, orient="vertical", command=self.episodes_tree.yview)
+        self.episodes_tree.configure(yscrollcommand=ep_scrollbar.set)
+
+        # Create button frame (for potential future actions like 'View Details')
+        ep_button_frame = ttk.Frame(episodes_frame)
+        ep_button_frame.pack(side="bottom", fill="x", padx=5, pady=5)
+
+        # Add Refresh button (placeholder for now)
+        refresh_button = ttk.Button(ep_button_frame, text="Refresh Episodes", command=self.refresh_episodes_display)
+        refresh_button.pack(side="left", padx=5)
+
+        # Pack widgets
+        self.episodes_tree.pack(side="left", fill="both", expand=True)
+        ep_scrollbar.pack(side="right", fill="y")
+
+        # Configure tag colors (similar to alerts)
+        self.episodes_tree.tag_configure("HIGH", foreground="red")
+        self.episodes_tree.tag_configure("MEDIUM", foreground="orange")
+        self.episodes_tree.tag_configure("LOW", foreground="blue")
+
+    def refresh_episodes_display(self):
+        """Fetches episodes from the manager and updates the display."""
+        try:
+            # Clear existing items
+            for item in self.episodes_tree.get_children():
+                self.episodes_tree.delete(item)
+
+            if self.episode_manager:
+                # Fetch active episodes (or could fetch all/recent based on need)
+                episodes = self.episode_manager.get_active_episodes()
+                logging.info(f"Refreshing episodes display, found {len(episodes)} active episodes.")
+                for episode_data in episodes:
+                    self.add_episode_to_treeview(episode_data)
+            else:
+                logging.warning("Episode manager not available, cannot refresh episodes display.")
+        except Exception as e:
+            logging.error(f"Error refreshing episodes display: {e}", exc_info=True)
+
+    def add_episode_to_treeview(self, episode_data: dict):
+        """Adds or updates a single episode in the episodes treeview."""
+        if not episode_data or not isinstance(episode_data, dict):
+            return
+
+        episode_id = episode_data.get("id", "")
+        if not episode_id:
+            return
+
+        # Format values for display
+        values = (
+            episode_id[:8] + "...", # Shorten ID for display
+            episode_data.get("prefix", "N/A"),
+            f"AS{episode_data.get('origin_as', 'N/A')}" if episode_data.get('origin_as') else "N/A",
+            episode_data.get("start_time", ""), # Keep as ISO string for now
+            episode_data.get("end_time", ""),   # Keep as ISO string for now
+            f"{episode_data.get('score', 0):.1f}", # Format score
+            episode_data.get("event_count", 0),
+            episode_data.get("max_severity", "LOW"),
+            episode_data.get("status", "OPEN")
+        )
+
+        severity_tag = episode_data.get("max_severity", "LOW").upper()
+
+        # Check if item exists, update if it does, insert if not
+        # Use full episode_id as the item ID (iid) for reliable updates/checks
+        if self.episodes_tree.exists(episode_id):
+            self.episodes_tree.item(episode_id, values=values, tags=(severity_tag,))
+        else:
+            # Insert new item
+            self.episodes_tree.insert("", tk.END, iid=episode_id, values=values, tags=(severity_tag,))
 
     def update_collectors(self, event=None):
         """Update the collectors list based on selected region."""

@@ -28,9 +28,9 @@ BGP Monitor is a tool for collecting, analyzing, and monitoring BGP routing upda
   - **Advanced Event/Episode Aggregation:** Groups related security alerts into "episodes" based on prefix, origin AS, and time window. Each episode is scored, enriched with metadata (hijack scope, subtype, AS path edit distance), and stored in Neo4j for high-level incident analysis.
 - Configurable security heuristics (thresholds, severity) via `config/app_settings.json`.
 - Detailed security alert logging to standard logging, daily CSV files (`data/security_alerts/`), and Neo4j.
-- **Episode Storage and Analytics:** All episodes are stored in the Neo4j database and can be queried for ongoing or recent security incidents. (See "Episode Aggregation" below.)
+- **Episode Storage, Persistence & Analytics:** Episodes are stored in Neo4j, loaded on startup for persistence, and can be queried for incident analysis. (See "Episode Aggregation" below.)
 - Configurable Syslog forwarding with JSON formatting for SIEM integration.
-- GUI panel for viewing, sorting, and exporting security alerts.
+- GUI panels for viewing BGP updates, security alerts, and aggregated episodes.
 - Database connection status indicator and entry count display.
 - Automatic reconnection logic for WebSocket connections.
 
@@ -170,8 +170,8 @@ An **episode** is a group of related BGP security alerts (e.g., hijacks, leaks, 
 
 - **Scoring:** Each episode is assigned a score based on the severity and type of its constituent alerts, with configurable multipliers for critical prefixes, origin changes, and RPKI invalids.
 - **Metadata:** Episodes are enriched with metadata such as hijack scope, subtype (e.g., origin change, more-specific), AS path edit distance, and affected ASNs.
-- **Storage:** Episodes are stored in the Neo4j database and can be queried for analytics, reporting, or incident review.
-- **Viewing Episodes:** Currently, episodes can be listed using a CLI command (see below). Future versions may add a GUI panel for episodes.
+- **Storage & Persistence:** Episodes are stored in the Neo4j database and active episodes are loaded on application startup for persistence across restarts. They can be queried for analytics, reporting, or incident review.
+- **Viewing Episodes:** A dedicated "Episodes" tab in the GUI displays a summary of active episodes. The CLI command below can still be used for direct database queries.
 
 #### Example: Listing Active Episodes
 
@@ -189,9 +189,9 @@ This will print a list of episode summaries, each with fields like prefix, origi
 4.  **AS Info (Optional)**: Select an AS number in the filter list and click "AS Info" to look up details about that AS.
 5.  **Start Monitoring**: Click "Start Monitoring". The button changes to "Stop Monitoring".
 6.  **View Updates**: Real-time BGP updates (announcements and withdrawals) matching filters appear in the "BGP Updates" log panel.
-7.  **Monitor Security Alerts**: The "Security Alerts" panel displays detected potential issues (hijacks, leaks, RPKI invalid, etc.).
-    - Click column headers ("Timestamp", "Severity", "Type", "Details") to sort alerts.
-    - Click "Export Alerts" to save the currently displayed alerts to a CSV file.
+7.  **Monitor Security Alerts & Episodes**:
+    - The "Security Alerts" tab displays individual detected potential issues (hijacks, leaks, RPKI invalid, etc.). Click column headers to sort or "Export Alerts" to save.
+    - The "Episodes" tab displays aggregated incidents based on related alerts. Click "Refresh Episodes" to update the view.
 8.  **Manage Data**:
     - Click "Clear Log" to clear the "BGP Updates" panel.
     - Click "Open Data" to open the `data/` directory (containing CSV backups, AS relationship files) in your file explorer.
