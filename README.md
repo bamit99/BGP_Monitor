@@ -33,6 +33,7 @@ BGP Monitor is a tool for collecting, analyzing, and monitoring BGP routing upda
 - Database connection status indicator and entry count display.
 - Automatic reconnection logic for WebSocket connections.
 
+P.S : PLEASE NOTE THAT THIS WILL REQUIRE A DEDICATED INSTANCE OF NEOJ AND A SYSLOG SERVER IN CASE YOU WANT TO FORWARD THE LOGS TO EXTERNAL DB.
 ## Installation
 
 1. Clone the repository:
