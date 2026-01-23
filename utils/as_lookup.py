@@ -6,7 +6,6 @@ from pathlib import Path
 import time
 import logging
 import re
-import peeringdb # Import the library
 
 class ASLookup:
     def __init__(self, cache_dir="cache"):

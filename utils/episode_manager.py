@@ -451,7 +451,9 @@ class EpisodeManager:
         # Store episode in database if available
         if self.db_manager:
             try:
-                self._store_episode(episode)
+                logger.debug(f"Storing episode: {episode.to_dict()}")
+                success = self.db_manager.store_episode(episode.to_dict())
+                logger.debug(f"Episode store successful: {success}")
             except Exception as e:
                 logger.error(f"Failed to store episode in database: {e}")
         
@@ -521,8 +523,10 @@ class EpisodeManager:
         if not self.db_manager:
             return
         
-        # This is a placeholder - actual implementation depends on your DB schema
-        # self.db_manager.store_episode(episode.to_dict(), final=final)
+        try:
+            self.db_manager.store_episode(episode.to_dict(), final=final)
+        except Exception as e:
+            logger.error(f"Failed to store episode in database: {e}")
 
     def cleanup_old_episodes(self) -> None:
         """

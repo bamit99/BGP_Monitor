@@ -43,11 +43,17 @@ cd bgp-monitor
 ```
 
 2. Install required dependencies:
-```bash
-conda create -n bgpmon python=3.11
-conda activate bgpmon
-pip install -r requirements.txt
-```
+
+   **Automated Installation (Recommended):**
+   - **Windows:** Run `install_windows.bat`
+   - **Linux/macOS:** Run `./install_linux.sh`
+
+   **Manual Installation:**
+   ```bash
+   conda create -n bgpmon python=3.11
+   conda activate bgpmon
+   pip install -r requirements.txt
+   ```
 
 3. Configure Neo4j database connection (optional):
    - Copy the configuration template:

@@ -147,9 +147,27 @@ class BGPMonitorGUI:
         self.status_bar = ttk.Label(root, textvariable=self.status_var, relief="sunken", padding=(5, 2))
         self.status_bar.pack(side="bottom", fill="x")
 
+        # Add connection status indicators
+        status_frame = ttk.Frame(root)
+        status_frame.pack(side=tk.BOTTOM, pady=5)
+        
         # Add Neo4j Connection Status LED with IP and DB info
-        self.db_status_led = tk.Label(root, text="DB: Disconnected", bg="red", fg="white", width=40)
-        self.db_status_led.pack(side=tk.BOTTOM, pady=5)
+        self.db_status_led = tk.Label(status_frame, text="DB: Disconnected", bg="red", fg="white", width=25)
+        self.db_status_led.pack(side=tk.LEFT, padx=2)
+        
+        # Add Syslog Status LED
+        syslog_enabled = self.app_settings.get("logging", {}).get("syslog", {}).get("enabled", False)
+        syslog_text = "Syslog: Enabled" if syslog_enabled else "Syslog: Disabled"
+        syslog_color = "green" if syslog_enabled else "red"
+        self.syslog_status_led = tk.Label(status_frame, text=syslog_text, bg=syslog_color, fg="white", width=25)
+        self.syslog_status_led.pack(side=tk.LEFT, padx=2)
+        
+        # Add RPKI Status LED
+        rpki_url = self.app_settings.get("rpki", {}).get("local_validator_url", None)
+        rpki_text = "RPKI: Local" if rpki_url else "RPKI: RIPEstat"
+        rpki_color = "green" if rpki_url else "orange"
+        self.rpki_status_led = tk.Label(status_frame, text=rpki_text, bg=rpki_color, fg="white", width=25)
+        self.rpki_status_led.pack(side=tk.LEFT, padx=2)
 
         # --- Configuration Buttons ---
         config_button_frame = ttk.Frame(root)
@@ -1475,6 +1493,11 @@ class BGPMonitorGUI:
 
             # Save the updated settings
             if self.config_manager.save_app_settings(self.app_settings):
+                # Update syslog status LED
+                syslog_text = "Syslog: Enabled" if enabled else "Syslog: Disabled"
+                syslog_color = "green" if enabled else "red"
+                self.syslog_status_led.config(text=syslog_text, bg=syslog_color)
+                
                 messagebox.showinfo("Syslog Settings", "Syslog settings saved successfully.\nA restart is required for changes to take effect.", parent=window)
                 window.destroy()
             else:
@@ -1552,7 +1575,12 @@ class BGPMonitorGUI:
                     logging.info(f"Updated running RPKIValidator instance. New URL: {self.rpki_validator.local_validator_url}") # Use logging
                 else:
                      logging.warning("RPKIValidator instance not found in GUI, cannot update running instance.") # Use logging
-
+                
+                # Update RPKI status LED
+                rpki_text = "RPKI: Local" if url else "RPKI: RIPEstat"
+                rpki_color = "green" if url else "orange"
+                self.rpki_status_led.config(text=rpki_text, bg=rpki_color)
+                
                 messagebox.showinfo("Success", "RPKI settings saved.", parent=window)
                 window.destroy()
             else:

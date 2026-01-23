@@ -25,7 +25,7 @@ class BGPDatabaseManager:
             logging.error(f"Failed to connect to Neo4j: {e}")
             raise
 
-    def _cleanup_duplicates_tx(self, tx):
+    def _cleanup_duplicates_tx(self, session):
         """Transaction function to clean up duplicate SecurityAlert nodes."""
         # Find duplicate alert_ids and keep only the node with the minimum internal ID for each
         # Note: Using deprecated id() function, replace if possible in future Neo4j versions
@@ -38,7 +38,7 @@ class BGPDatabaseManager:
         MATCH (n) WHERE elementId(n) = nodeId AND elementId(n) <> minId
         DETACH DELETE n
         """
-        result = tx.run(cleanup_query)
+        result = session.run(cleanup_query)
         summary = result.consume()
         if summary.counters.nodes_deleted > 0:
              logging.info(f"Cleaned up {summary.counters.nodes_deleted} duplicate SecurityAlert nodes.")
@@ -46,36 +46,36 @@ class BGPDatabaseManager:
              logging.info("No duplicate SecurityAlert nodes found to clean up.")
 
 
-    def _create_schema_tx(self, tx):
+    def _create_schema_tx(self, session):
         """Transaction function to create schema elements (constraints and indexes)."""
         # Ensure clean state for alert_id uniqueness: drop constraint by name and any index on the property
-        tx.run("DROP CONSTRAINT security_alert_id_unique IF EXISTS") # Drop by specific name
-        tx.run("DROP INDEX security_alert_id IF EXISTS") # Drop index by specific name
+        session.run("DROP CONSTRAINT security_alert_id_unique IF EXISTS") # Drop by specific name
+        session.run("DROP INDEX security_alert_id IF EXISTS") # Drop index by specific name
 
         # Now, create the unique constraint for alert_id (implicitly creates an index)
         # Use IF NOT EXISTS for idempotency, even after attempting drops
-        tx.run("CREATE CONSTRAINT security_alert_id_unique IF NOT EXISTS FOR (a:SecurityAlert) REQUIRE a.alert_id IS UNIQUE")
+        session.run("CREATE CONSTRAINT security_alert_id_unique IF NOT EXISTS FOR (a:SecurityAlert) REQUIRE a.alert_id IS UNIQUE")
 
         # Create indexes for non-unique properties used in lookups
-        tx.run("""
+        session.run("""
             CREATE INDEX security_alert_timestamp IF NOT EXISTS
             FOR (a:SecurityAlert)
             ON (a.timestamp)
         """)
-        tx.run("""
+        session.run("""
             CREATE INDEX security_alert_severity IF NOT EXISTS
             FOR (a:SecurityAlert)
             ON (a.severity)
         """)
 
-    def _drop_schema_tx(self, tx):
+    def _drop_schema_tx(self, session):
         """Transaction function to drop potentially conflicting schema elements."""
         # Drop constraint by name and any index on the property
-        tx.run("DROP CONSTRAINT security_alert_id_unique IF EXISTS")
-        tx.run("DROP INDEX security_alert_id IF EXISTS")
+        session.run("DROP CONSTRAINT security_alert_id_unique IF EXISTS")
+        session.run("DROP INDEX security_alert_id IF EXISTS")
         # Also drop the other indexes in case they need recreation (optional but safer)
-        tx.run("DROP INDEX security_alert_timestamp IF EXISTS")
-        tx.run("DROP INDEX security_alert_severity IF EXISTS")
+        session.run("DROP INDEX security_alert_timestamp IF EXISTS")
+        session.run("DROP INDEX security_alert_severity IF EXISTS")
 
 
     def _init_schema(self):
@@ -83,11 +83,11 @@ class BGPDatabaseManager:
         try:
             with self.driver.session() as session:
                 # 1. Run cleanup in its own transaction first
-                session.write_transaction(self._cleanup_duplicates_tx)
+                self._cleanup_duplicates_tx(session)
                 # 2. Run drop operations in a separate transaction
-                session.write_transaction(self._drop_schema_tx)
+                self._drop_schema_tx(session)
                 # 3. Run create operations in a final transaction
-                session.write_transaction(self._create_schema_tx)
+                self._create_schema_tx(session)
 
             logging.info("Successfully initialized database schema")
         except ClientError as e:
