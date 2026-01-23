@@ -2,6 +2,10 @@
 
 This file tracks suggested improvements for the BGP security monitoring capabilities (`utils/security_analyzer.py`). Check items off as they are completed.
 
+## Recent Review (2026-01-23) - Prioritized Improvement Roadmap
+
+Based on comprehensive code review, the following prioritized improvements have been identified to enhance functionality, address limitations, and modernize the thick-client architecture.
+
 ## Completed Enhancements:
 
 - [x] **Integrate AS Relationship Data:**
@@ -57,3 +61,49 @@ This file tracks suggested improvements for the BGP security monitoring capabili
 - [ ] **Optimize for Performance/Scalability:**
     *   **Description:** Investigate and implement optimizations (batching, async checks, sampling) if needed for high-volume BGP feeds.
     *   **Impact:** Medium (Depends on observed performance with real-world data).
+
+### High Priority Improvements (Immediate Impact)
+
+- [ ] **Develop Web-Based Interface**
+    *   **Description:** Convert from Tkinter desktop app to a web application (e.g., using FastAPI + WebSockets + React/Vue frontend). Enables remote access, multi-user support, and easier deployment.
+    *   **Impact:** High (Addresses thick-client limitation, improves accessibility).
+
+- [ ] **Enhance AI Anomaly Detection**
+    *   **Description:** Implement online learning for Isolation Forest, add more features (communities, peer diversity), integrate supervised models, add model persistence and automated retraining.
+    *   **Impact:** High (Strengthens AI capabilities for better threat detection).
+
+- [ ] **Optimize Performance & Scalability**
+    *   **Description:** Move processing to background threads/async tasks, implement batch processing, add memory-efficient caching with LRU eviction, consider distributed processing.
+    *   **Impact:** High (Critical for handling high-volume feeds without blocking UI).
+
+### Medium Priority Improvements (Enhanced Functionality)
+
+- [ ] **Dynamic Threat Intelligence Integration**
+    *   **Description:** Replace static bad actor lists with feeds from BGPStream, CIRCL, or commercial providers. Add automated updates and reputation scoring.
+    *   **Impact:** Medium-High (Improves detection of known malicious activity).
+
+- [ ] **Additional Security Checks**
+    *   **Description:** Add IRR validation, bogon filtering, visibility loss detection, and new prefix announcement monitoring.
+    *   **Impact:** Medium-High (Enhances security monitoring coverage).
+
+- [ ] **Improved Configuration Management**
+    *   **Description:** Develop GUI/web interface for managing critical prefixes, AS lists, and thresholds with validation and bulk operations.
+    *   **Impact:** Medium (Improves usability and maintainability).
+
+### Lower Priority Improvements (Quality of Life)
+
+- [ ] **Enhanced Visualization & Reporting**
+    *   **Description:** Add interactive dashboards with charts for BGP trends, security incidents, and episode timelines. Implement advanced export capabilities.
+    *   **Impact:** Medium (Better operational insights).
+
+- [ ] **API Development**
+    *   **Description:** Create REST API for programmatic access to monitoring data, alerts, and configuration.
+    *   **Impact:** Medium (Enables SIEM integration and automation).
+
+- [ ] **Comprehensive Testing & Monitoring**
+    *   **Description:** Add extensive unit/integration tests and implement health checks with metrics collection.
+    *   **Impact:** Medium (Improves reliability and maintainability).
+
+- [ ] **Documentation & Training**
+    *   **Description:** Expand documentation with deployment guides, troubleshooting, and training materials including video tutorials.
+    *   **Impact:** Low-Medium (Enhances user adoption).
