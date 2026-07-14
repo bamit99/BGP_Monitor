@@ -1,5 +1,5 @@
 {
-    "uri": "neo4j://192.168.0.5:7687",
+    "uri": "bolt://localhost:7687",
     "username": "neo4j",
-    "password": "Appropiate1!"
+    "password": "your_password"
 }

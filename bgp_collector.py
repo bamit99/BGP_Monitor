@@ -11,7 +11,10 @@ import ssl
 import signal
 from utils.db_manager import BGPDatabaseManager
 from config.database_config import NEO4J_CONFIG
-from utils.security_analyzer import check_suspicious_patterns as security_check
+from utils.security_analyzer import (
+    check_suspicious_patterns as security_check,
+    get_origin_as,
+)
 
 # Set up logging with more detailed format
 log_dir = Path("logs")
@@ -72,6 +75,8 @@ class RIPECollector:
 
         # Track important routing changes
         self.prefix_history = {}  # Track prefix changes
+        self.max_history_per_prefix = 100
+        self.max_tracked_prefixes = 100_000
         self.as_path_changes = {}  # Track AS path changes
         self.suspicious_updates = []  # Track potentially suspicious updates
 
@@ -124,26 +129,21 @@ class RIPECollector:
     def analyze_update(self, timestamp, prefix, as_path, peer_asn, collector, next_hop=None, communities=None, update_type="announcement"):
         """Analyze BGP updates for significant changes and potential issues."""
         try:
-            # Store update in Neo4j
-            self.db_manager.store_bgp_update(
-                timestamp=timestamp,
-                collector=collector,
-                peer_asn=peer_asn,
-                prefix=prefix,
-                as_path=as_path,
-                next_hop=next_hop,
-                communities=communities,
-                update_type=update_type
-            )
-            
             # 1. Track prefix history
-            if prefix not in self.prefix_history:
+            history = self.prefix_history.get(prefix)
+            previous_origin_as = get_origin_as(history[-1]['as_path']) if history else None
+            if history is None:
+                if len(self.prefix_history) >= self.max_tracked_prefixes:
+                    self.prefix_history.pop(next(iter(self.prefix_history)))
                 self.prefix_history[prefix] = []
-            self.prefix_history[prefix].append({
+                history = self.prefix_history[prefix]
+            history.append({
                 'timestamp': timestamp,
                 'as_path': as_path,
                 'peer_asn': peer_asn
             })
+            if len(history) > self.max_history_per_prefix:
+                del history[:-self.max_history_per_prefix]
             
             # 2. Check for AS path changes
             if prefix in self.prefix_history and len(self.prefix_history[prefix]) > 1:
@@ -163,7 +163,10 @@ class RIPECollector:
                     print(f"New Path: {as_path}")
             
             # 3. Check for suspicious patterns
-            alert = security_check(timestamp, prefix, as_path, peer_asn, self.prefix_history, self.db_manager)
+            alert = security_check(
+                timestamp, prefix, as_path, peer_asn, previous_origin_as,
+                self.db_manager, collector=collector,
+            )
             if alert:
                 self.suspicious_updates.append(alert)
             
@@ -224,7 +227,10 @@ class RIPECollector:
                             communities=communities,
                             update_type="announcement"
                         )
-                        self.analyze_update(timestamp, prefix, as_path, peer_asn, collector)
+                        self.analyze_update(
+                            timestamp, prefix, as_path, peer_asn, collector,
+                            next_hop=next_hop, communities=communities,
+                        )
                     
                 print(f"{'='*80}")
             

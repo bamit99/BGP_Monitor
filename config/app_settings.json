@@ -26,7 +26,7 @@
                 "severity": "MEDIUM"
             },
             "ml_anomaly": {
-                "enabled": true,
+                "enabled": false,
                 "severity": "MEDIUM"
             }
         }

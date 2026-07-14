@@ -54,6 +54,16 @@ class ConfigManager:
         Load Neo4j configuration from available sources.
         Tries both INI and JSON formats across multiple paths.
         """
+        env_config = {
+            'uri': os.getenv('BGP_MONITOR_NEO4J_URI', ''),
+            'username': os.getenv('BGP_MONITOR_NEO4J_USERNAME', ''),
+            'password': os.getenv('BGP_MONITOR_NEO4J_PASSWORD', '')
+        }
+        if any(env_config.values()):
+            if not all(env_config.values()):
+                logger.warning("Neo4j environment configuration is incomplete.")
+            return env_config
+
         # First try to load from our INI file
         config = self._load_from_ini()
         if config:
@@ -69,7 +79,7 @@ class ConfigManager:
         return {
             'uri': 'bolt://localhost:7687',
             'username': 'neo4j',
-            'password': 'password'
+            'password': ''
         }
 
     def load_gui_settings(self):
@@ -134,21 +144,6 @@ class ConfigManager:
                 }
             except Exception as e:
                 logger.error(f"Error loading INI config: {e}")
-
-        # Try template as fallback
-        elif self.ini_template_path.exists():
-            try:
-                config = configparser.ConfigParser()
-                config.read(self.ini_template_path)
-                logger.warning(f"Using template config from {self.ini_template_path}")
-
-                return {
-                    'uri': config.get('neo4j', 'uri'),
-                    'username': config.get('neo4j', 'username'),
-                    'password': config.get('neo4j', 'password')
-                }
-            except Exception as e:
-                logger.error(f"Error loading template config: {e}")
 
         return None
 

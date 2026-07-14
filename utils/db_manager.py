@@ -18,7 +18,8 @@ class BGPDatabaseManager:
                 result.single()
             logging.info("Successfully connected to Neo4j database")
 
-            # Initialize database schema
+            # Initialize schema idempotently. Destructive migrations must be run
+            # explicitly, never as a side effect of connecting to production.
             self._init_schema()
 
         except Exception as e:
@@ -48,12 +49,7 @@ class BGPDatabaseManager:
 
     def _create_schema_tx(self, session):
         """Transaction function to create schema elements (constraints and indexes)."""
-        # Ensure clean state for alert_id uniqueness: drop constraint by name and any index on the property
-        session.run("DROP CONSTRAINT security_alert_id_unique IF EXISTS") # Drop by specific name
-        session.run("DROP INDEX security_alert_id IF EXISTS") # Drop index by specific name
-
-        # Now, create the unique constraint for alert_id (implicitly creates an index)
-        # Use IF NOT EXISTS for idempotency, even after attempting drops
+        # Create schema idempotently; do not drop indexes or delete data at startup.
         session.run("CREATE CONSTRAINT security_alert_id_unique IF NOT EXISTS FOR (a:SecurityAlert) REQUIRE a.alert_id IS UNIQUE")
 
         # Create indexes for non-unique properties used in lookups
@@ -82,11 +78,6 @@ class BGPDatabaseManager:
         """Initialize database schema using separate transactions for cleanup, drop, and create."""
         try:
             with self.driver.session() as session:
-                # 1. Run cleanup in its own transaction first
-                self._cleanup_duplicates_tx(session)
-                # 2. Run drop operations in a separate transaction
-                self._drop_schema_tx(session)
-                # 3. Run create operations in a final transaction
                 self._create_schema_tx(session)
 
             logging.info("Successfully initialized database schema")
@@ -169,6 +160,14 @@ class BGPDatabaseManager:
                     id=id,
                     raw_message=json.dumps(raw_message) if raw_message else None # Store raw as JSON string
                 )
+
+                # Alerts may be saved before or after their update. Link any alert
+                # carrying this stable update identifier once the update exists.
+                session.run("""
+                    MATCH (a:SecurityAlert {update_id: $update_id})
+                    MATCH (u:BGPUpdate {update_id: $update_id})
+                    MERGE (a)-[:TRIGGERED_BY]->(u)
+                    """, update_id=update_id)
 
                 # Process AS path relationships if this is an announcement
                 if update_type == "announcement" and as_path:
@@ -307,7 +306,8 @@ class BGPDatabaseManager:
                 # Step 1: Create/Merge the SecurityAlert node unconditionally
                 # Ensure timestamp is in a compatible format for ID generation
                 ts_str = alert['timestamp'].isoformat() if isinstance(alert['timestamp'], datetime) else str(alert['timestamp'])
-                alert_id = f"{ts_str}_{alert['prefix']}"
+                update_id = alert.get('update_id')
+                alert_id = update_id or f"{ts_str}_{alert['prefix']}"
 
                 session.run("""
                     MERGE (a:SecurityAlert {alert_id: $alert_id})
@@ -320,7 +320,8 @@ class BGPDatabaseManager:
                         a.reasons = $reasons,
                         a.is_critical_prefix = $is_critical,
                         a.origin_as = $origin_as, // Store origin AS if available
-                        a.previous_origin_as = $previous_origin_as // Store previous origin if available
+                        a.previous_origin_as = $previous_origin_as, // Store previous origin if available
+                        a.update_id = $update_id
                     ON MATCH SET
                         a.timestamp = $timestamp, // Update timestamp on match? Or keep first seen? Decide policy.
                         a.severity = $severity,   // Update severity if it changes?
@@ -335,26 +336,17 @@ class BGPDatabaseManager:
                     reasons=";".join(alert.get('reasons', [])),
                     is_critical=alert.get('is_critical_prefix', False),
                     origin_as=alert.get('origin_as'),
-                    previous_origin_as=alert.get('previous_origin_as')
+                    previous_origin_as=alert.get('previous_origin_as'),
+                    update_id=update_id
                 )
 
                 # Step 2: Optionally match the BGPUpdate and create the relationship
-                # Use the same ID construction logic as store_bgp_update
-                update_id = alert_id # Assuming alert_id and update_id are constructed the same way
-                result = session.run("""
-                    MATCH (a:SecurityAlert {alert_id: $alert_id})
-                    MATCH (u:BGPUpdate {update_id: $update_id})
-                    MERGE (a)-[r:TRIGGERED_BY]->(u)
-                    RETURN count(r) as link_count
-                    """,
-                    alert_id=alert_id,
-                    update_id=update_id
-                )
-                # Check if the link was created or already existed
-                link_summary = result.consume()
-                # This part is tricky as MERGE doesn't directly tell you if it matched or created.
-                # We could potentially log if the BGPUpdate node wasn't found, but that requires another query.
-                # For now, we assume if the query runs without error, the alert node is saved.
+                if update_id:
+                    session.run("""
+                        MATCH (a:SecurityAlert {alert_id: $alert_id})
+                        MATCH (u:BGPUpdate {update_id: $update_id})
+                        MERGE (a)-[:TRIGGERED_BY]->(u)
+                        """, alert_id=alert_id, update_id=update_id)
 
                 return True
         except Exception as e:

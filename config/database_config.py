@@ -25,7 +25,7 @@ except Exception as e:
     NEO4J_CONFIG = {
         'uri': 'bolt://localhost:7687',
         'username': 'neo4j',
-        'password': 'password'
+        'password': ''
     }
     logger.warning("Using fallback configuration for testing purposes only!")
 

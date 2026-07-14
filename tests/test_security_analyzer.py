@@ -26,8 +26,6 @@ def test_hijacking_detection():
     """Test cases for BGP hijacking detection"""
     db = MockDBManager()
     now = datetime.now()
-    prefix_history = {}
-
     test_cases = [
         {
             'name': "Google DNS Hijacking Attempt",
@@ -70,9 +68,9 @@ def test_hijacking_detection():
     for case in test_cases:
         print(f"\nTest Case: {case['name']}")
         
-        # Set up history if needed
+        previous_origin_as = None
         if 'setup_history' in case:
-            prefix_history[case['prefix']] = case['setup_history']
+            previous_origin_as = int(case['setup_history'][-1]['as_path'].split(',')[-1])
 
         # Run the security check
         alert = check_suspicious_patterns(
@@ -80,7 +78,7 @@ def test_hijacking_detection():
             prefix=case['prefix'],
             as_path=case['as_path'],
             peer_asn="64512",  # Test peer ASN
-            prefix_history=prefix_history,
+            previous_origin_as=previous_origin_as,
             db_manager=db
         )
 

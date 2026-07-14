@@ -979,7 +979,8 @@ class BGPMonitorGUI:
                         peer_asn=peer_asn_str,
                         # Pass the retrieved previous origin
                         previous_origin_as=previous_origin_as,
-                        db_manager=self.bgp_monitor.db_manager # Pass db_manager if available
+                        db_manager=self.bgp_monitor.db_manager, # Pass db_manager if available
+                        collector=collector,
                     )
 
                     # --- Determine Line Tag ---

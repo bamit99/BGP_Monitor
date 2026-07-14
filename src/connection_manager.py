@@ -119,15 +119,12 @@ class ConnectionManager:
         """Close the WebSocket connection asynchronously."""
         if self.websocket:
             try:
-                # Get all tasks in the current loop
-                loop = asyncio.get_running_loop()
-                tasks = [t for t in asyncio.all_tasks(loop) if t is not asyncio.current_task()]
-                
-                # Cancel all other tasks (including keepalive)
-                for task in tasks:
-                    task.cancel()
+                # This manager owns only its listener task.  Never cancel every
+                # task in the application's event loop during a connection close.
+                if self._listen_task and self._listen_task is not asyncio.current_task():
+                    self._listen_task.cancel()
                     try:
-                        await task
+                        await self._listen_task
                     except asyncio.CancelledError:
                         pass
                 

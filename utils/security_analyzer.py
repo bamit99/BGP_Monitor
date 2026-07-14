@@ -667,7 +667,8 @@ class SecurityAlertLogger:
 
 
 def check_suspicious_patterns(timestamp, prefix, as_path, peer_asn, previous_origin_as, db_manager,
-                              app_settings: Dict = APP_SETTINGS): # Pass settings
+                              app_settings: Dict = APP_SETTINGS,
+                              collector: Optional[str] = None):
     """
     Check BGP update for various suspicious patterns.
 
@@ -745,7 +746,8 @@ def check_suspicious_patterns(timestamp, prefix, as_path, peer_asn, previous_ori
         all_reasons.extend(transit_reasons)
 
     # 7. Check for ML-based Anomalies
-    ml_config = heuristics_config.get("ml_anomaly", {"enabled": True, "severity": "MEDIUM"})
+    # Do not claim ML coverage until a trained model has been explicitly loaded.
+    ml_config = heuristics_config.get("ml_anomaly", {"enabled": False, "severity": "MEDIUM"})
     if ml_config.get("enabled", True):
         # Prepare data for feature extraction
         update_data_for_ml = {
@@ -780,7 +782,12 @@ def check_suspicious_patterns(timestamp, prefix, as_path, peer_asn, previous_ori
         'origin_as': origin_as, # Add origin AS to alert context
         'reasons': all_reasons, # Use the determined criticality
         'previous_origin_as': previous_origin_as, # Add previous origin for context
-        'is_critical_prefix': is_critical
+        'is_critical_prefix': is_critical,
+        'collector': collector,
+        'update_id': (
+            f"{collector}_{timestamp.isoformat()}_{prefix}"
+            if collector and hasattr(timestamp, 'isoformat') else None
+        ),
         # Removed UK Telecom field
     }
     return alert
