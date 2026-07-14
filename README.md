@@ -56,7 +56,7 @@ cd bgp-monitor
    ```
 
 3. Configure Neo4j database connection (optional):
-   - Copy the configuration template:
+   - Copy the configuration template (kept local and ignored by Git):
    ```bash
    cp config/database_config_template.ini config/database_config.ini
    ```
@@ -75,7 +75,7 @@ cd bgp-monitor
    username = neo4j
    password = your_password
    ```
-   *Note: Configuration is primarily managed via `utils/config_manager.py` which favors `db_config.json`.*
+   *Note: Configuration is primarily managed via `utils/config_manager.py` which favors `db_config.json`. For deployments, set `BGP_MONITOR_NEO4J_URI`, `BGP_MONITOR_NEO4J_USERNAME`, and `BGP_MONITOR_NEO4J_PASSWORD` instead of writing credentials to disk.*
 
 ## Running the Application
 

@@ -23,6 +23,7 @@ logs/
 
 # Configuration files with sensitive data
 config/database_config.ini
+config/db_config.json
 
 # Collected data
 collected_data/
