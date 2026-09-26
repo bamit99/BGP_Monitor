@@ -26,3 +26,6 @@ web/dist/
 .idea/
 .vscode/
 *.swp
+
+# Local watchdog config (not part of the monitor)
+WATCHDOG.yml
