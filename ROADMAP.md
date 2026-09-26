@@ -37,9 +37,10 @@ Track for continuing from the 2.0 rebuild. Items are grouped by what unlocks the
 
 ## Security
 
-1. **Rotate the Neo4j password** — `config/db_config.json` containing `***REMOVED-CREDENTIAL***` was removed
-   from the index but remains in git history (`d5971dd`, `a8e0fe2`); the credential is live and shared
-   with other projects on this instance, so rotate it and store the new value in `.env` only
+1. **Rotate the Neo4j password** — `config/db_config.json` held a plaintext credential, was removed
+   from the index, and remains in git history (`d5971dd`, `e28afe2`, `7a5044f`, `886f969`). Do not
+   record the value here or anywhere else in the repo. Treat it as compromised: rotate it, store the
+   new value in `.env` only, and then scrub history (item 2)
 2. **Scrub history** — `git filter-repo --path config/db_config.json --invert-paths` on a fresh clone
    and force-push, *after* rotation; requires coordinating anyone else with a clone
 
