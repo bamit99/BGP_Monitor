@@ -1,0 +1,292 @@
+"""Regression tests for defects found and fixed during the telecom-grade rebuild.
+
+Each test pins a specific bug that was observed in production output, so a
+regression fails loudly rather than silently degrading detection quality.
+
+Run:  python -m pytest tests/test_bgpmon.py -v
+"""
+
+from __future__ import annotations
+
+import os
+import socket
+import struct
+import sys
+import tempfile
+import unittest
+from datetime import datetime, timezone
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from bgpmon.config import DetectionSettings, RPkiSettings, Settings, SourceSettings
+from bgpmon.detect import ASGraph, DetectionEngine, is_bogon_asn, is_bogon_prefix
+from bgpmon.gate import AlertGate
+from bgpmon.models import Alert, Kind, Severity, Update, make_alert_id, make_update_id
+from bgpmon.rpki import RPkiEngine, VRPSet
+
+
+def make_update(prefix: str, path: list[int], collector: str = "rrc00", when: datetime | None = None) -> Update:
+    ts = when or datetime.now(timezone.utc)
+    return Update(
+        update_id=make_update_id(collector, ts, prefix),
+        timestamp=ts,
+        prefix=prefix,
+        collector=collector,
+        peer="192.0.2.1",
+        peer_as="174",
+        as_path=",".join(str(a) for a in path),
+        as_path_list=path,
+        origin_as=path[-1] if path else None,
+    )
+
+
+def write_asrel(rows: list[tuple[int, int, int]]) -> str:
+    handle = tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False)
+    for a, b, code in rows:
+        handle.write(f"{a}|{b}|{code}\n")
+    handle.close()
+    return handle.name
+
+
+class TestUpdateIdentity(unittest.TestCase):
+    """The alert->update graph edge broke because the two ids were derived
+    differently. Both must now come from the same helpers."""
+
+    def test_alert_id_matches_update_id_used_by_sink(self):
+        when = datetime(2026, 9, 26, 12, 0, 0, tzinfo=timezone.utc)
+        update_id = make_update_id("rrc00", when, "203.0.113.0/24")
+        self.assertEqual(update_id, "rrc00_2026-09-26T12:00:00+00:00_203.0.113.0/24")
+        first = make_alert_id(update_id, Kind.RPKI_INVALID)
+        second = make_alert_id(update_id, Kind.RPKI_INVALID)
+        self.assertEqual(first, second, "alert ids must be deterministic for idempotent MERGE")
+
+    def test_different_kinds_produce_different_alert_ids(self):
+        update_id = make_update_id("rrc00", datetime.now(timezone.utc), "203.0.113.0/24")
+        self.assertNotEqual(make_alert_id(update_id, Kind.ROUTE_LEAK),
+                            make_alert_id(update_id, Kind.RPKI_INVALID))
+
+
+class TestASRelationshipDirection(unittest.TestCase):
+    """CAIDA encodes direction explicitly and the provider is NOT always the
+    lower ASN; assuming so fabricated relationships and produced a 7% alert rate."""
+
+    def test_provider_with_higher_asn_is_read_correctly(self):
+        path = write_asrel([(9000, 1, -1), (1, 2, -1), (2, 7, 0)])
+        try:
+            graph = ASGraph()
+            self.assertEqual(graph.load(path), 3)
+            self.assertEqual(graph.relationship(9000, 1), -1, "AS9000 is provider of AS1")
+            self.assertEqual(graph.relationship(1, 9000), 1, "reverse must invert")
+            self.assertEqual(graph.relationship(2, 7), 0, "peer link is symmetric")
+            self.assertEqual(graph.relationship(7, 2), 0)
+        finally:
+            os.unlink(path)
+
+    def test_unknown_pairs_are_never_accused(self):
+        path = write_asrel([(1, 2, -1)])
+        try:
+            graph = ASGraph()
+            graph.load(path)
+            self.assertEqual(graph.relationship(1, 999), 99)
+            violated, pair, conf = graph.valley_violation([999, 1, 2])
+            self.assertFalse(violated, "a path with unknown edges must not be flagged")
+            self.assertIsNone(pair)
+        finally:
+            os.unlink(path)
+
+
+class TestValleyFree(unittest.TestCase):
+    """RFC 7908 semantics on the propagation direction (reverse of AS path order)."""
+
+    def setUp(self):
+        self.file = write_asrel([(1, 2, -1), (3, 2, -1), (2, 7, -1), (2, 6, 0)])
+        self.graph = ASGraph()
+        self.graph.load(self.file)
+
+    def tearDown(self):
+        os.unlink(self.file)
+
+    def test_flat_then_uphill_is_a_leak(self):
+        # path 1,2,6 -> propagation 6 -> 2, then 2 -> 1 uphill past a peer edge.
+        violated, pair, conf = self.graph.valley_violation([1, 2, 6])
+        self.assertTrue(violated)
+        self.assertEqual(pair, (2, 1))
+        self.assertGreater(conf, 0.5)
+
+    def test_provider_to_peer_is_a_leak(self):
+        # RFC 7908 Type 5: route received from a provider (3 -> 2 downhill) and
+        # then re-announced to a peer (2 -> 6 flat).
+        violated, pair, _ = self.graph.valley_violation([6, 2, 3])
+        self.assertTrue(violated)
+        self.assertEqual(pair, (2, 6))
+
+    def test_pure_downhill_is_legitimate(self):
+        # AS1 -> AS2 -> AS7 is provider -> customer -> customer all the way down.
+        violated, _, _ = self.graph.valley_violation([7, 2, 1])
+        self.assertFalse(violated)
+
+    def test_two_hop_paths_are_never_leaks(self):
+        violated, _, _ = self.graph.valley_violation([1, 2])
+        self.assertFalse(violated)
+
+    def test_uphill_then_downhill_is_legitimate(self):
+        # AS3 (provider of AS2) reaches its own provider AS1's customer cone; the
+        # canonical legal shape up* down* must stay silent.
+        violated, _, _ = self.graph.valley_violation([7, 2, 3])
+        self.assertFalse(violated)
+
+
+class TestOwnedSpace(unittest.TestCase):
+    """Owned-space detection must be RPKI-anchored so unauthorised origins are
+    caught without an operator having to enumerate every legitimate origin."""
+
+    def setUp(self):
+        self.settings = DetectionSettings(owned_prefixes=())
+        self.graph = ASGraph()
+        self.rpki = RPkiEngine(RPkiSettings(enable_remote_fallback=False))
+        self.rpki.vrps.replace([(4, int.from_bytes(socket.inet_aton("203.0.113.0"), "big"), 24, 64496, 24)],
+                               [], serial=1, session_id=1)
+
+    def test_rpki_valid_is_not_a_hijack(self):
+        engine = DetectionEngine(self.settings, self.rpki, self.graph)
+        alerts = engine.evaluate(make_update("203.0.113.0/24", [174, 64496]))
+        self.assertEqual([a.kind for a in alerts if a.kind == Kind.HIJACK_ORIGIN], [])
+
+    def test_rpki_invalid_origin_is_flagged(self):
+        engine = DetectionEngine(self.settings, self.rpki, self.graph)
+        alerts = engine.evaluate(make_update("203.0.113.0/24", [174, 64500]))
+        kinds = {a.kind for a in alerts}
+        self.assertIn(Kind.RPKI_INVALID, kinds)
+        invalid = next(a for a in alerts if a.kind == Kind.RPKI_INVALID)
+        self.assertEqual(invalid.severity, Severity.HIGH)
+
+    def test_owned_prefix_invalid_is_critical(self):
+        import ipaddress
+        settings = DetectionSettings(owned_prefixes=(ipaddress.ip_network("203.0.113.0/24"),))
+        engine = DetectionEngine(settings, self.rpki, self.graph)
+        alerts = engine.evaluate(make_update("203.0.113.0/24", [174, 64500]))
+        invalid = next(a for a in alerts if a.kind == Kind.RPKI_INVALID)
+        self.assertEqual(invalid.severity, Severity.CRITICAL)
+        self.assertTrue(invalid.is_owned)
+
+
+class TestAlertVolumeControls(unittest.TestCase):
+    """One incident must not generate one alert per affected prefix."""
+
+    def setUp(self):
+        self.file = write_asrel([(1, 2, -1), (3, 2, -1), (2, 6, 0)])
+        self.graph = ASGraph()
+        self.graph.load(self.file)
+        self.rpki = RPkiEngine(RPkiSettings(enable_remote_fallback=False))
+        self.rpki.vrps.replace([], [], serial=1, session_id=1)
+        self.engine = DetectionEngine(DetectionSettings(), self.rpki, self.graph)
+
+    def tearDown(self):
+        os.unlink(self.file)
+
+    def test_leak_reported_once_per_as_pair(self):
+        # 40 different prefixes sharing the same leaky pair.
+        alerts = []
+        for i in range(40):
+            alerts.extend(self.engine.evaluate(make_update(f"198.51.{i}.0/24", [1, 2, 6])))
+        leaks = [a for a in alerts if a.kind == Kind.ROUTE_LEAK]
+        self.assertEqual(len(leaks), 1, "one leaky pair == one alert")
+
+    def test_gate_rate_limits_repeats(self):
+        gate = AlertGate(per_key_interval_s=60)
+        base = datetime.now(timezone.utc)
+        first = Alert(alert_id="a", dedup_key="k", timestamp=base, kind=Kind.ROUTE_LEAK,
+                      severity=Severity.HIGH, confidence=0.9, prefix="198.51.100.0/24",
+                      as_path="1,2,6", peer_as="1", collector="rrc00", update_id="u")
+        second = Alert(alert_id="b", dedup_key="k", timestamp=base, kind=Kind.ROUTE_LEAK,
+                       severity=Severity.HIGH, confidence=0.9, prefix="198.51.100.0/24",
+                       as_path="1,2,6", peer_as="1", collector="rrc00", update_id="u")
+        self.assertIsNotNone(gate.admit(first))
+        self.assertIsNone(gate.admit(second))
+        self.assertEqual(gate.stats()["suppressed"], 1)
+
+
+class TestRpkiSet(unittest.TestCase):
+    """RFC 6811 semantics: valid match, wrong origin, over-long prefix, no coverage."""
+
+    def setUp(self):
+        self.vrps = VRPSet()
+        v4 = int.from_bytes(socket.inet_aton("203.0.113.0"), "big")
+        self.vrps.replace([(4, v4, 24, 64496, 24)], [], serial=1, session_id=1)
+
+    def test_valid(self):
+        self.assertEqual(self.vrps.validate("203.0.113.0/24", 64496).state, "VALID")
+
+    def test_invalid_origin(self):
+        result = self.vrps.validate("203.0.113.0/24", 64500)
+        self.assertEqual(result.state, "INVALID")
+        self.assertEqual(result.offending[0][2], "origin not authorised")
+
+    def test_invalid_length(self):
+        result = self.vrps.validate("203.0.113.128/25", 64496)
+        self.assertEqual(result.state, "INVALID")
+        self.assertEqual(result.offending[0][2], "prefix longer than maxLength")
+
+    def test_not_found(self):
+        self.assertEqual(self.vrps.validate("198.51.100.0/24", 64496).state, "NOT_FOUND")
+
+    def test_indexed_prefix_count_is_not_vrp_count(self):
+        self.assertEqual(self.vrps.size, 1)
+
+
+class TestRtrTransport(unittest.TestCase):
+    """The RTR client must parse real PDUs, not just open a socket."""
+
+    def test_reset_query_parses_end_of_data(self):
+        settings = RPkiSettings()
+        try:
+            sock = socket.create_connection((settings.rtr_host, settings.rtr_port), timeout=5)
+        except OSError:
+            self.skipTest("no local RTR server available")
+        sock.close()
+        engine = RPkiEngine(settings)
+        self.assertTrue(engine.sync_once())
+        self.assertGreater(engine.vrps.size, 1000, "global VRP set should be large")
+        self.assertEqual(engine.stats["transport"], "rtr")
+
+
+class TestConfigGuards(unittest.TestCase):
+    def test_route_views_collectors_are_rejected(self):
+        os.environ["BGPMON_COLLECTORS"] = "route-views.chicago,rrc00"
+        try:
+            with self.assertRaises(ValueError):
+                SourceSettings.from_env()
+        finally:
+            del os.environ["BGPMON_COLLECTORS"]
+
+    def test_rrc_collectors_accepted(self):
+        os.environ["BGPMON_COLLECTORS"] = "rrc00,rrc01"
+        try:
+            self.assertEqual(SourceSettings.from_env().collectors, ("rrc00", "rrc01"))
+        finally:
+            del os.environ["BGPMON_COLLECTORS"]
+
+    def test_secrets_come_from_environment(self):
+        os.environ["BGPMON_NEO4J_PASSWORD"] = "from-env"
+        try:
+            self.assertEqual(Settings.load().sink.neo4j_password, "from-env")
+        finally:
+            del os.environ["BGPMON_NEO4J_PASSWORD"]
+
+
+class TestBogonClassification(unittest.TestCase):
+    def test_private_and_reserved_asns(self):
+        for asn in (0, 23456, 64512, 65534, 4200000001, 4294967295):
+            self.assertTrue(is_bogon_asn(asn), f"AS{asn} should be reserved")
+        for asn in (1, 13335, 131072):
+            self.assertFalse(is_bogon_asn(asn))
+
+    def test_bogon_prefixes(self):
+        for prefix in ("10.0.0.0/8", "192.168.1.0/24", "203.0.113.0/24", "2001:db8::/32"):
+            self.assertTrue(is_bogon_prefix(prefix))
+        self.assertFalse(is_bogon_prefix("8.8.8.0/24"))
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

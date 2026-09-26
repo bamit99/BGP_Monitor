@@ -1,0 +1,10 @@
+# BGP Monitor — service runtime dependencies (no GUI, no plotting stack).
+# The desktop Tkinter app and the web dashboard are separate: this file is what
+# the monitor container installs.
+
+websockets>=16.0,<17
+requests>=2.32,<3
+neo4j>=5.28,<7
+fastapi>=0.115,<1
+uvicorn[standard]>=0.30,<1
+prometheus-client>=0.20,<1

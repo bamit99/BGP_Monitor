@@ -1,0 +1,159 @@
+"""FastAPI service: REST for history, WebSocket for live alert fanout, /metrics.
+
+This is the API the web dashboard consumes; the Tkinter GUI is retired.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import PlainTextResponse
+
+from bgpmon.config import Settings
+from bgpmon.pipeline import Pipeline
+
+logger = logging.getLogger(__name__)
+
+
+def create_app(settings: Optional[Settings] = None) -> FastAPI:
+    settings = settings or Settings.load()
+    pipeline = Pipeline(settings)
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        pipeline.start()
+        app.state.pipeline = pipeline
+        try:
+            yield
+        finally:
+            pipeline.stop()
+
+    app = FastAPI(
+        title="BGP Monitor",
+        description="Telecom-grade BGP routing security monitoring",
+        version="2.0.0",
+        lifespan=lifespan,
+    )
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=list(settings.api.cors_origins),
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    def require_token(authorization: Optional[str] = Header(default=None)) -> None:
+        if not settings.api.token:
+            return
+        expected = f"Bearer {settings.api.token}"
+        if authorization != expected:
+            raise HTTPException(status_code=401, detail="invalid or missing bearer token")
+
+    @app.get("/api/health")
+    def health() -> Dict[str, Any]:
+        return pipeline.health()
+
+    @app.get("/api/alerts")
+    def alerts(limit: int = Query(200, ge=1, le=2000),
+               severity: Optional[str] = Query(None, description="minimum severity"),
+               kind: Optional[str] = None,
+               owned_only: bool = False,
+               source: str = Query("auto", description="auto|memory|graph"),
+               _: None = Depends(require_token)) -> Dict[str, Any]:
+        if source in ("auto", "graph") and pipeline.sink.enabled:
+            rows = pipeline.sink.recent_alerts(limit=limit, min_severity=severity, kind=kind)
+            if rows:
+                return {"source": "graph", "count": len(rows), "alerts": rows}
+            if source == "graph":
+                return {"source": "graph", "count": 0, "alerts": []}
+        rows = pipeline.recent(limit=limit, min_severity=severity, kind=kind, owned_only=owned_only)
+        return {"source": "memory", "count": len(rows), "alerts": rows}
+
+    @app.get("/api/prefix/{prefix:path}/history")
+    def prefix_history(prefix: str, limit: int = Query(50, ge=1, le=500),
+                       _: None = Depends(require_token)) -> Dict[str, Any]:
+        return {"prefix": prefix, "history": pipeline.sink.prefix_history(prefix, limit)}
+
+    @app.get("/api/topology")
+    def topology(limit: int = Query(300, ge=10, le=2000),
+                 _: None = Depends(require_token)) -> Dict[str, Any]:
+        return pipeline.sink.topology(limit)
+
+    @app.get("/api/rpki/{prefix:path}/{origin_as}")
+    def rpki_check(prefix: str, origin_as: int, _: None = Depends(require_token)) -> Dict[str, Any]:
+        result = pipeline.rpki.validate(prefix, origin_as)
+        return {
+            "prefix": prefix,
+            "origin_as": origin_as,
+            "state": result.state,
+            "reason": result.reason,
+            "source": result.source,
+            "matched": [{"asn": a, "max_length": m} for a, m in result.matched],
+            "offending": [{"asn": a, "max_length": m, "why": w} for a, m, w in result.offending],
+        }
+
+    @app.get("/api/config")
+    def config_summary(_: None = Depends(require_token)) -> Dict[str, Any]:
+        return {
+            "collectors": list(settings.source.collectors),
+            "owned_prefixes": [str(p) for p in settings.detection.owned_prefixes],
+            "critical_prefixes": [str(p) for p in settings.detection.critical_prefixes],
+            "monitored_asns": list(settings.detection.monitored_asns),
+            "heuristics": {
+                "more_specific_min_delta": settings.detection.more_specific_min_delta,
+                "long_path_zscore": settings.detection.long_path_zscore,
+                "long_path_floor": settings.detection.long_path_floor,
+                "prepend_floor": settings.detection.prepend_floor,
+                "leak_confidence_floor": settings.detection.leak_confidence_floor,
+                "visibility_loss_grace_s": settings.detection.visibility_loss_grace_s,
+            },
+        }
+
+    @app.get("/metrics", response_class=PlainTextResponse)
+    def metrics() -> str:
+        try:
+            from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+            return generate_latest().decode("utf-8")
+        except Exception:  # noqa: BLE001
+            return "# prometheus_client unavailable\n"
+
+    @app.websocket("/ws/alerts")
+    async def alerts_ws(ws: WebSocket) -> None:
+        if settings.api.token:
+            token = ws.query_params.get("token", "")
+            if token != settings.api.token:
+                await ws.close(code=4401)
+                return
+        await ws.accept()
+        sub = pipeline.subscribe()
+        try:
+            backlog = pipeline.recent(limit=50)
+            await ws.send_text(json.dumps({"type": "snapshot", "alerts": backlog}))
+            while True:
+                payload = await sub.get()
+                await ws.send_text(json.dumps({"type": "alert", "alert": payload}))
+        except WebSocketDisconnect:
+            pass
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("WebSocket closed: %s", exc)
+        finally:
+            pipeline.unsubscribe(sub)
+
+    # Serve the built dashboard when present, so deployment is one service.
+    dist = Path(__file__).resolve().parent.parent / "web" / "dist"
+    if dist.is_dir():
+        from fastapi.staticfiles import StaticFiles
+
+        app.mount("/", StaticFiles(directory=str(dist), html=True), name="dashboard")
+        logger.info("Serving dashboard from %s", dist)
+    else:
+        logger.warning("Dashboard build not found at %s (run `npm run build` in web/)", dist)
+
+    return app

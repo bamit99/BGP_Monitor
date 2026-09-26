@@ -1,0 +1,78 @@
+services:
+  neo4j:
+    image: neo4j:5.26-community
+    container_name: bgpmon-neo4j
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:7474:7474"
+      - "127.0.0.1:7687:7687"
+    environment:
+      NEO4J_AUTH: "neo4j/${NEO4J_PASSWORD:?set NEO4J_PASSWORD in .env}"
+      NEO4J_server_memory_heap_max__size: 2G
+      NEO4J_server_memory_pagecache_size: 1G
+    volumes:
+      - neo4j-data:/data
+      - neo4j-logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7474 >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  routinator:
+    image: nlnetlabs/routinator:latest
+    container_name: bgpmon-routinator
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3323:3323"   # RTR — what the monitor syncs from
+      - "127.0.0.1:8323:8323"   # HTTP API
+    volumes:
+      - routinator-cache:/home/routinator/.rpki-cache
+    healthcheck:
+      test: ["CMD-SHELL", "routinator vrps --noupdate --format csv >/dev/null 2>&1 || exit 0"]
+      interval: 60s
+      timeout: 30s
+      retries: 3
+
+  monitor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: bgpmon-monitor
+    restart: unless-stopped
+    depends_on:
+      neo4j:
+        condition: service_healthy
+      routinator:
+        condition: service_started
+    ports:
+      - "8080:8080"
+    environment:
+      BGPMON_API_HOST: "0.0.0.0"
+      BGPMON_API_PORT: "8080"
+      BGPMON_API_TOKEN: "${BGPMON_API_TOKEN:-}"
+      BGPMON_COLLECTORS: "${BGPMON_COLLECTORS:-rrc00,rrc01,rrc11,rrc12}"
+      BGPMON_OWNED_PREFIXES: "${BGPMON_OWNED_PREFIXES:-}"
+      BGPMON_NEO4J_ENABLED: "true"
+      BGPMON_NEO4J_URI: "bolt://neo4j:7687"
+      BGPMON_NEO4J_USER: "neo4j"
+      BGPMON_NEO4J_PASSWORD: "${NEO4J_PASSWORD:?set NEO4J_PASSWORD in .env}"
+      BGPMON_RPKI_RTR_HOST: "routinator"
+      BGPMON_RPKI_RTR_PORT: "3323"
+      BGPMON_SYSLOG_ENABLED: "${BGPMON_SYSLOG_ENABLED:-false}"
+      BGPMON_SYSLOG_HOST: "${BGPMON_SYSLOG_HOST:-}"
+      BGPMON_LOG_LEVEL: "${BGPMON_LOG_LEVEL:-INFO}"
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config:ro
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/api/health',timeout=5)\" || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
+
+volumes:
+  neo4j-data:
+  neo4j-logs:
+  routinator-cache:

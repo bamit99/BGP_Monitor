@@ -1,47 +1,36 @@
-#!/bin/bash
-
-echo "BGP Monitor Installation Script for Linux"
-echo "========================================="
-
-# Check if conda is installed
-if ! command -v conda &> /dev/null; then
-    echo "ERROR: Conda is not installed or not in PATH."
-    echo "Please install Miniconda or Anaconda first."
-    echo "Download from: https://docs.conda.io/en/latest/miniconda.html"
-    echo "Or install via: wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh"
-    exit 1
-fi
-
-echo "Creating conda environment 'bgpmon' with Python 3.11..."
-conda create -n bgpmon python=3.11 -y
-if [ $? -ne 0 ]; then
-    echo "ERROR: Failed to create conda environment."
-    exit 1
-fi
-
-echo "Activating environment and installing requirements..."
-source "$(conda info --base)/etc/profile.d/conda.sh"
-conda activate bgpmon
-if [ $? -ne 0 ]; then
-    echo "ERROR: Failed to activate conda environment."
-    exit 1
-fi
-
-pip install -r requirements.txt
-if [ $? -ne 0 ]; then
-    echo "ERROR: Failed to install requirements."
-    exit 1
-fi
-
-echo ""
-echo "Installation completed successfully!"
-echo ""
-echo "To use the BGP Monitor:"
-echo "1. Run: conda activate bgpmon"
-echo "2. Run: python main.py"
-echo ""
-echo "For Neo4j setup, refer to the README.md file."
-echo ""
-
-# Make the script executable (in case it wasn't)
-chmod +x "$0"
+#!/usr/bin/env bash
+# Telecom-grade BGP Monitor: service install (Linux).
+set -euo pipefail
+PY=${PY:-python3}
+echo "==> Creating virtualenv"
+"$PY" -m venv .venv
+source .venv/bin/activate
+echo "==> Installing runtime dependencies"
+pip install -q -r requirements-service.txt -r requirements.txt
+echo "==> Checking optional extras"
+python - <<'PY'
+missing = []
+for name in ("prometheus_client", "fastapi", "neo4j", "websockets"):
+    try:
+        __import__(name)
+    except ImportError:
+        missing.append(name)
+print("missing:", missing or "none")
+PY
+echo "==> Pulling CAIDA AS relationship data (route-leak detection)"
+python - <<'PY'
+from pathlib import Path
+import urllib.request
+out = Path("data/as_relationships.txt.bz2")
+out.parent.mkdir(exist_ok=True)
+if out.exists():
+    print("    already present:", out)
+else:
+    url = "https://publicdata.caida.org/datasets/as-relationships/serial-1/20260901.as-rel.txt.bz2"
+    print("    downloading", url)
+    urllib.request.urlretrieve(url, out)
+    print("    wrote", out, out.stat().st_size, "bytes")
+PY
+echo
+echo "==> Done. Start with:  python -m bgpmon"
+echo "    (set BGPMON_OWNED_PREFIXES to enable hijack/visibility baselines)"
