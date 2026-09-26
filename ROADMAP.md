@@ -70,6 +70,25 @@ Track for continuing from the 2.0 rebuild. Items are grouped by what unlocks the
 5. **Sink backpressure** — Neo4j lock contention was observed when two writers ran; single-writer
    is now guaranteed by design, but add a queue-depth alert to catch a slow sink
 
+## Carried over from the pre-rebuild tracker
+
+Items from `IMPROVEMENT_TRACKER.md` that the rebuild did not cover and that remain
+worth doing. The rest of that tracker described the retired analyzer and is either
+shipped above or obsolete.
+
+1. **IRR validation** — check announcements against registered `route:`/`route6:`
+   objects (RADb) as a second authorisation source alongside RPKI. Reuses the
+   importer plumbing from the `scope` work
+2. **Dynamic threat intelligence** — replace the static `known_bad_actors` concept
+   with a feed-driven malicious-ASN/prefix list (CIRCL, Spamhaus, commercial),
+   refreshed on a schedule with source attribution on each alert
+3. **Anomaly detection beyond z-scores** — the old Isolation Forest never fitted a
+   model and was removed rather than shipped inert; if revisited, use per-prefix
+   historical baselines (needs the persistence item above) and validate
+   out-of-sample before enabling anything that pages a NOC
+4. **Documentation and runbooks** — NOC-facing material: what each alert kind means,
+   first-response actions, escalation, and false-positive history for tuning
+
 ## Infra
 
 1. **`docker compose build`** — the image is authored but never built; verify it and add
