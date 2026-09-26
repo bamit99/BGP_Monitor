@@ -150,6 +150,10 @@ class DetectionSettings:
     visibility_loss_grace_s: int = 900
     visibility_min_expected_collectors: int = 2
 
+    # how long an incident signature suppresses a repeat of the same finding
+    # before it is allowed to alert again
+    incident_ttl_s: int = 3600
+
     @classmethod
     def from_env(cls) -> "DetectionSettings":
         sec = _read_json(CONFIG_DIR / "security_config.json") or {}
@@ -169,6 +173,8 @@ class DetectionSettings:
             critical_prefixes=critical,
             monitored_asns=monitored,
             expected_origins=expected,
+            incident_ttl_s=_env_int("BGPMON_INCIDENT_TTL", cls.incident_ttl_s),
+            visibility_loss_grace_s=_env_int("BGPMON_VISIBILITY_GRACE", cls.visibility_loss_grace_s),
         )
 
 

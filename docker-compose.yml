@@ -46,7 +46,9 @@ services:
       routinator:
         condition: service_started
     ports:
-      - "8080:8080"
+      # Host port is parameterised: 8080 is reserved by a Windows service on
+      # some hosts (WinNAT excluded range), and compose should not care.
+      - "${BGPMON_API_PORT:-8080}:8080"
     environment:
       BGPMON_API_HOST: "0.0.0.0"
       BGPMON_API_PORT: "8080"
@@ -63,6 +65,7 @@ services:
       BGPMON_SYSLOG_HOST: "${BGPMON_SYSLOG_HOST:-}"
       BGPMON_LOG_LEVEL: "${BGPMON_LOG_LEVEL:-INFO}"
     volumes:
+      # Site data and configuration are mounted, never baked into the image.
       - ./data:/app/data
       - ./config:/app/config:ro
     healthcheck:

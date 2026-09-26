@@ -11,7 +11,8 @@ import json
 import logging
 import threading
 import time
-from datetime import datetime
+from collections import Counter
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from bgpmon.config import SinkSettings
@@ -101,6 +102,10 @@ class GraphSink:
         self.written_updates = 0
         self.written_alerts = 0
         self.failed_batches = 0
+        # Adjacency aggregates kept in memory; see topology().
+        self._edge_counts: Counter = Counter()
+        self._origin_counts: Counter = Counter()
+        self._aggregate_cap = 20_000
 
     # ---- lifecycle ----------------------------------------------------
     def start(self) -> bool:
@@ -161,6 +166,28 @@ class GraphSink:
                 "next_hop": update.next_hop,
                 "update_type": update.update_type,
             })
+            # Aggregate adjacency here rather than deriving it from raw history
+            # on every dashboard load: ORDER BY timestamp cannot be index-backed
+            # while filtering on as_path, so the query scanned every BGPUpdate
+            # node (measured 23-28s). These counters are O(1) per update.
+            if update.as_path_list:
+                path = update.as_path_list
+                if update.origin_as is not None:
+                    self._origin_counts[update.origin_as] += 1
+                for i in range(len(path) - 1):
+                    if path[i] != path[i + 1]:
+                        self._edge_counts[(path[i], path[i + 1])] += 1
+
+    def _trim_aggregates(self) -> None:
+        """Keep the largest contributors so the map cannot grow without bound on
+        a long-running full-table feed."""
+        if len(self._edge_counts) <= self._aggregate_cap:
+            return
+        top = dict(sorted(self._edge_counts.items(), key=lambda kv: -kv[1])[: self._aggregate_cap // 2])
+        self._edge_counts = Counter(top)
+        if len(self._origin_counts) > self._aggregate_cap:
+            top_o = dict(sorted(self._origin_counts.items(), key=lambda kv: -kv[1])[: self._aggregate_cap // 2])
+            self._origin_counts = Counter(top_o)
 
     def submit_alert(self, alert: Alert) -> None:
         if not self.enabled:
@@ -182,6 +209,8 @@ class GraphSink:
         with self._lock:
             updates, self._updates = self._updates, []
             alerts, self._alerts = self._alerts, []
+        with self._lock:
+            self._trim_aggregates()
         if updates:
             self._write(_UPSERT_STREAM, updates, "updates")
         if alerts:
@@ -266,22 +295,35 @@ class GraphSink:
             return []
 
     def topology(self, limit: int = 300) -> Dict[str, Any]:
-        """AS adjacency observed with relationship classification, for the graph view.
+        """Observed AS adjacency for the graph view.
 
-        Ordered by recency rather than sampled arbitrarily: an unordered LIMIT on
-        a large table returns whichever rows the planner finds first, which made
-        the graph show a handful of unrelated ASNs.
+        Served from in-process counters (populated as updates are produced).
+        The Neo4j path is a fallback for a freshly restarted process, and is
+        restricted to a recent time window so it can use the timestamp index.
         """
+        with self._lock:
+            edges = self._edge_counts.most_common(limit * 3)
+            origins = self._origin_counts.most_common(limit)
+        if edges or origins:
+            return {
+                "nodes": [{"asn": asn, "origin_count": count} for asn, count in origins],
+                "edges": [{"from": a, "to": b, "count": count} for (a, b), count in edges[: limit * 2]],
+                "source": "live",
+            }
+        return self._topology_from_graph(limit)
+
+    def _topology_from_graph(self, limit: int) -> Dict[str, Any]:
         if not self.enabled or self._driver is None:
-            return {"nodes": [], "edges": []}
+            return {"nodes": [], "edges": [], "source": "empty"}
         try:
             with self._driver.session() as session:
+                since = datetime.now(timezone.utc) - timedelta(minutes=15)
                 result = session.run("""
                     MATCH (u:BGPUpdate)
-                    WHERE u.as_path IS NOT NULL AND u.as_path <> ''
+                    WHERE u.timestamp > $since AND u.as_path IS NOT NULL AND u.as_path <> ''
                     WITH u ORDER BY u.timestamp DESC LIMIT $limit
                     RETURN u.as_path AS as_path
-                """, limit=limit)
+                """, since=since, limit=limit)
                 edges = {}
                 origins = {}
                 for record in result:
@@ -297,6 +339,7 @@ class GraphSink:
                     "nodes": nodes,
                     "edges": [{"from": a, "to": b, "count": c} for (a, b), c in
                               sorted(edges.items(), key=lambda x: -x[1])[:500]],
+                    "source": "graph",
                 }
         except Exception as exc:  # noqa: BLE001
             logger.error("topology query failed: %s", exc)

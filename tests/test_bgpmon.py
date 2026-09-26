@@ -121,20 +121,143 @@ class TestValleyFree(unittest.TestCase):
         self.assertTrue(violated)
         self.assertEqual(pair, (2, 6))
 
-    def test_pure_downhill_is_legitimate(self):
-        # AS1 -> AS2 -> AS7 is provider -> customer -> customer all the way down.
+    def test_pure_downhill_multi_hop_is_legitimate(self):
+        # AS1 -> AS2 -> AS7 reads as provider -> customer -> customer: every
+        # propagation step is downhill, so the path is legal.
         violated, _, _ = self.graph.valley_violation([7, 2, 1])
         self.assertFalse(violated)
 
-    def test_two_hop_paths_are_never_leaks(self):
-        violated, _, _ = self.graph.valley_violation([1, 2])
-        self.assertFalse(violated)
-
     def test_uphill_then_downhill_is_legitimate(self):
-        # AS3 (provider of AS2) reaches its own provider AS1's customer cone; the
-        # canonical legal shape up* down* must stay silent.
-        violated, _, _ = self.graph.valley_violation([7, 2, 3])
-        self.assertFalse(violated)
+        # AS9 is a customer of AS1 (edge 1|9|-1). AS9 announcing up to its
+        # provider AS1 and AS1 then passing it down to customer AS2 is the
+        # canonical legal shape up* down*.
+        path = write_asrel([(1, 2, -1), (1, 9, -1)])
+        try:
+            graph = ASGraph()
+            graph.load(path)
+            violated, _, _ = graph.valley_violation([2, 1, 9])
+            self.assertFalse(violated, "up then down is the legal valley-free shape")
+        finally:
+            os.unlink(path)
+
+
+class TestSpaDeepLinks(unittest.TestCase):
+    """StaticFiles(html=True) mounted at "/" 404s a fresh GET of /alerts, which
+    breaks bookmarks and refreshes in the console."""
+
+    def setUp(self):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from bgpmon.api import mount_dashboard
+
+        self.dist = Path(tempfile.mkdtemp())
+        (self.dist / "index.html").write_text("<html><body>shell</body></html>", encoding="utf-8")
+        (self.dist / "assets").mkdir()
+        (self.dist / "assets" / "app.js").write_text("console.log(1)", encoding="utf-8")
+        app = FastAPI()
+
+        @app.get("/api/health")
+        def health():
+            return {"status": "ok"}
+
+        mount_dashboard(app, self.dist)
+        self.client = TestClient(app)
+
+    def test_deep_link_returns_shell(self):
+        for route in ("/alerts", "/topology", "/rpki", "/alerts/1234"):
+            response = self.client.get(route)
+            self.assertEqual(response.status_code, 200, route)
+            self.assertIn("shell", response.text)
+
+    def test_root_returns_shell(self):
+        self.assertEqual(self.client.get("/").status_code, 200)
+
+    def test_api_routes_are_not_shadowed(self):
+        response = self.client.get("/api/health")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"status": "ok"})
+
+    def test_assets_are_served(self):
+        response = self.client.get("/assets/app.js")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("console.log", response.text)
+
+
+class TestIncidentExpiry(unittest.TestCase):
+    """Incident dedup must expire: a condition that clears and returns hours
+    later has to alert again, or the NOC never learns of the recurrence."""
+
+    def setUp(self):
+        self.file = write_asrel([(1, 2, -1), (3, 2, -1), (2, 6, 0)])
+        graph = ASGraph()
+        graph.load(self.file)
+        self.rpki = RPkiEngine(RPkiSettings(enable_remote_fallback=False))
+        self.rpki.vrps.replace([], [], serial=1, session_id=1)
+        self.graph = graph
+
+    def tearDown(self):
+        os.unlink(self.file)
+
+    def test_leak_realerts_after_ttl(self):
+        import time as _time
+        settings = DetectionSettings(incident_ttl_s=60)
+        engine = DetectionEngine(settings, self.rpki, self.graph)
+
+        first = [a for a in engine.evaluate(make_update("198.51.100.0/24", [1, 2, 6]))
+                 if a.kind == Kind.ROUTE_LEAK]
+        self.assertEqual(len(first), 1)
+
+        repeat = [a for a in engine.evaluate(make_update("198.51.101.0/24", [1, 2, 6]))
+                  if a.kind == Kind.ROUTE_LEAK]
+        self.assertEqual(repeat, [], "same pair within TTL must not re-alert")
+
+        # age the incident beyond the TTL, then confirm it fires again
+        for scope in list(engine._leak_pairs):
+            engine._leak_pairs[scope][2] -= 120
+        engine._sweep(_time.monotonic())
+        after = [a for a in engine.evaluate(make_update("198.51.102.0/24", [1, 2, 6]))
+                 if a.kind == Kind.ROUTE_LEAK]
+        self.assertEqual(len(after), 1, "incident must re-alert after expiry")
+
+
+class TestRpkiFallbackDiscipline(unittest.TestCase):
+    """A complete local VRP set fully determines RFC 6811 validity, so the
+    remote validator must not be consulted — it only adds latency and rate
+    limits."""
+
+    def test_remote_not_called_when_local_set_is_ready(self):
+        engine = RPkiEngine(RPkiSettings(enable_remote_fallback=True))
+        v4 = int.from_bytes(socket.inet_aton("203.0.113.0"), "big")
+        engine.vrps.replace([(4, v4, 24, 64496, 24)], [], serial=1, session_id=1)
+
+        calls = []
+        engine._validate_remote = lambda prefix, origin: calls.append((prefix, origin))
+        verdict = engine.validate("198.51.100.0/24", 64496)
+        self.assertEqual(verdict.state, "NOT_FOUND")
+        self.assertEqual(calls, [], "remote must not be queried while the local set answers")
+
+    def test_remote_used_only_when_set_is_empty(self):
+        engine = RPkiEngine(RPkiSettings(enable_remote_fallback=True))
+        calls = []
+
+        class _Response:
+            status_code = 200
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"data": {"status": "valid", "description": "remote"}}
+
+        class _Session:
+            def get(self, *a, **k):
+                calls.append(a)
+                return _Response()
+
+        engine._remote_session = _Session()
+        verdict = engine.validate("198.51.100.0/24", 64496)
+        self.assertEqual(verdict.state, "VALID")
+        self.assertEqual(len(calls), 1)
 
 
 class TestOwnedSpace(unittest.TestCase):

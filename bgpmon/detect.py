@@ -20,6 +20,7 @@ from __future__ import annotations
 import ipaddress
 import logging
 import math
+import time
 import re
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
@@ -267,7 +268,8 @@ class DetectionEngine:
         self._critical = settings.critical_prefixes
         self._bogus_announcements: Dict[Tuple[str, int], Set[int]] = defaultdict(set)
         self._leak_pairs: Dict[str, List] = {}
-        self._path_incidents: Set[str] = set()
+        self._path_incidents: Dict[str, float] = {}
+        self._evaluations = 0
         self.stats = defaultdict(int)
 
     # ---- helpers ------------------------------------------------------
@@ -323,10 +325,28 @@ class DetectionEngine:
             is_owned=is_owned,
         )
 
+    def _sweep(self, now: float) -> None:
+        """Expire incident state so a recurring condition re-alerts.
+
+        Without expiry, a leak or anomalous path seen once would be silenced for
+        the lifetime of the process: if the condition clears and returns hours
+        later the NOC would never hear about it again.
+        """
+        ttl = self.settings.incident_ttl_s
+        for scope, seen in list(self._leak_pairs.items()):
+            if now - seen[2] > ttl:
+                del self._leak_pairs[scope]
+        for scope, seen in list(self._path_incidents.items()):
+            if now - seen > ttl:
+                del self._path_incidents[scope]
+
     # ---- public entry -------------------------------------------------
     def evaluate(self, update: Update) -> List[Alert]:
         """Run every detector for one announcement. Withdrawals are state-only."""
         alerts: List[Alert] = []
+        self._evaluations += 1
+        if self._evaluations % 4096 == 0:
+            self._sweep(time.monotonic())
         if update.update_type == "withdrawal":
             st = self._state.get(update.prefix)
             if st:
@@ -448,9 +468,10 @@ class DetectionEngine:
         seen = self._leak_pairs.get(pair_key)
         if seen is None:
             first = True
-            self._leak_pairs[pair_key] = [1, update.prefix]
+            self._leak_pairs[pair_key] = [1, update.prefix, time.monotonic()]
         else:
             seen[0] += 1
+            seen[2] = time.monotonic()
             first = False
         if not first:
             self.stats["ROUTE_LEAK_prefixed"] += 1
@@ -477,9 +498,10 @@ class DetectionEngine:
             # thousands of prefixes that origin happens to announce with it.
             scope = f"AS{update.origin_as}|len{len(path)}"
             if scope in self._path_incidents:
+                self._path_incidents[scope] = time.monotonic()
                 self.stats["LONG_PATH_prefixed"] += 1
                 return out
-            self._path_incidents.add(scope)
+            self._path_incidents[scope] = time.monotonic()
             out.append(self._alert(
                 update, Kind.LONG_PATH, Severity.MEDIUM, min(0.9, 0.4 + z / 20),
                 [f"Path length {len(path)} is {z:.1f}σ above this prefix's mean {mean:.1f}"],

@@ -1,0 +1,25 @@
+# Never copy credentials, keys or runtime data into an image.
+.env
+.env.*
+!.env.example
+config/db_config.json
+config/database_config.ini
+
+# Runtime data: mounts provide these, and they are large and site-specific.
+data/
+cache/
+logs/
+*.log
+
+# Build artefacts and local tooling
+web/node_modules/
+web/dist/
+.pytest_cache/
+**/__pycache__/
+*.py[cod]
+.git/
+.github/
+.vscode/
+.idea/
+*.code-workspace
+WATCHDOG.yml

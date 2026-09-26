@@ -14,12 +14,43 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.staticfiles import StaticFiles
 
 from bgpmon.config import Settings
 from bgpmon.pipeline import Pipeline
 
 logger = logging.getLogger(__name__)
+
+
+def mount_dashboard(app: FastAPI, dist: Path) -> bool:
+    """Serve the built SPA such that client-side deep links work.
+
+    `StaticFiles(html=True)` mounted at "/" cannot serve a fresh GET of
+    `/alerts`: the file does not exist, so it 404s before the React router ever
+    runs. Route order matters — this is registered last, so the API, WebSocket
+    and /metrics routes (already declared) still win.
+    """
+    index = dist / "index.html"
+    if not index.is_file():
+        logger.warning("Dashboard build not found at %s (run `npm run build` in web/)", dist)
+        return False
+
+    assets = dist / "assets"
+    if assets.is_dir():
+        app.mount("/assets", StaticFiles(directory=str(assets)), name="assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    def spa_fallback(full_path: str):
+        candidate = (dist / full_path).resolve()
+        # Serve a real file when asked for one (favicon, manifest), but never
+        # escape the build directory via a crafted path.
+        if full_path and candidate.is_file() and str(candidate).startswith(str(dist.resolve())):
+            return FileResponse(candidate)
+        return FileResponse(index)
+
+    logger.info("Serving dashboard from %s with SPA fallback", dist)
+    return True
 
 
 def create_app(settings: Optional[Settings] = None) -> FastAPI:
@@ -147,13 +178,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             pipeline.unsubscribe(sub)
 
     # Serve the built dashboard when present, so deployment is one service.
-    dist = Path(__file__).resolve().parent.parent / "web" / "dist"
-    if dist.is_dir():
-        from fastapi.staticfiles import StaticFiles
-
-        app.mount("/", StaticFiles(directory=str(dist), html=True), name="dashboard")
-        logger.info("Serving dashboard from %s", dist)
-    else:
-        logger.warning("Dashboard build not found at %s (run `npm run build` in web/)", dist)
+    mount_dashboard(app, Path(__file__).resolve().parent.parent / "web" / "dist")
 
     return app
