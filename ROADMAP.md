@@ -39,12 +39,14 @@ Track for continuing from the 2.0 rebuild. Items are grouped by what unlocks the
 
 1. **Rotate the Neo4j password** — `config/db_config.json` held a plaintext credential, was removed
    from the index, and remains in git history — list it with
-   `git log --all -S'***REMOVED-CREDENTIAL***'`. Do not record the value here or anywhere else in the repo.
+   `git log --all -S<the-old-password>` (substitute the value locally; it must not appear in the
+   repo). Do not record the value here or anywhere else in the repo.
    Treat it as compromised: rotate it, store the new value in `.env` only, and then scrub history
    (item 2), which rewrites every commit SHA below (item 3 in Console refers to this)
 2. **Scrub history** — after rotation. The credential sits in blobs (the file itself *and* the
    ROADMAP prose that quoted it), so a path filter is not sufficient:
-   `printf '***REMOVED-CREDENTIAL***==>***REMOVED***\n' > expressions.txt && git filter-repo --replace-text expressions.txt --force`
+   `printf '<the-old-password>==>***REMOVED***\n' > expressions.txt` (untracked), then
+   `git filter-repo --replace-text expressions.txt --force`
    then `git push --force-with-lease` both `master` and `archive/pre-rebuild-master` (they share the
    ancestry holding it). Every commit SHA changes: collaborators must re-clone, fork history cannot be
    reached, and GitHub may keep the old SHAs retrievable until it garbage-collects — ask Support to
