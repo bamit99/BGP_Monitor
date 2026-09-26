@@ -97,6 +97,11 @@ FastAPI from `web/dist` so deployment is one service.
 - **Topology** — observed AS adjacency (deterministic layout, not a drifting physics sim)
 - **RPKI** — on-demand validation against the local VRP set, honest about `NOT_FOUND`
 
+## Detection reference
+
+Every alert kind, its baseline, and its severity semantics are documented in
+[Logic.md](Logic.md). Tuning lives in `DetectionSettings` (`bgpmon/config.py`).
+
 ## Tests
 
 ```bash
