@@ -1,4 +1,4 @@
-"""Typed configuration for the telecom-grade pipeline.
+"""Typed configuration for the monitoring pipeline.
 
 Secrets are NEVER stored in git: they come from environment variables, with the
 legacy JSON files read only as a migration path.

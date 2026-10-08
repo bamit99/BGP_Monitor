@@ -8,11 +8,13 @@ Run:  python -m pytest tests/test_bgpmon.py -v
 
 from __future__ import annotations
 
+import asyncio
 import os
 import socket
 import struct
 import sys
 import tempfile
+import time
 import unittest
 import ipaddress
 from dataclasses import replace
@@ -21,12 +23,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from bgpmon.api import create_app
+from bgpmon.api import create_app, mount_dashboard
 from bgpmon.config import DetectionSettings, RPkiSettings, Settings, SourceSettings
 from bgpmon.detect import ASGraph, DetectionEngine, is_bogon_asn, is_bogon_prefix
 from bgpmon.gate import AlertGate
+from bgpmon.pipeline import Pipeline
 from bgpmon.models import Alert, Kind, Severity, Update, make_alert_id, make_update_id
 from bgpmon.rpki import RPkiEngine, VRPSet
 
@@ -203,6 +207,178 @@ class TestSpaDeepLinks(unittest.TestCase):
         response = self.client.get("/assets/app.js")
         self.assertEqual(response.status_code, 200)
         self.assertIn("console.log", response.text)
+
+
+class TestApiNotFoundIsJson(unittest.TestCase):
+    """The SPA catch-all is a GET /{full_path:path}, so an unknown /api/* path
+    used to resolve to index.html with a 200. A client debugging a missing route
+    got HTML and no indication the route was absent."""
+
+    def setUp(self):
+        # Held on self: a TemporaryDirectory left as a local is collected when
+        # setUp returns, which deletes the directory before the first request.
+        self.tmp = tempfile.TemporaryDirectory()
+        dist = Path(self.tmp.name)
+        (dist / "index.html").write_text("<html>shell</html>", encoding="utf-8")
+        assets = dist / "assets"
+        assets.mkdir()
+        (assets / "app.js").write_text("console.log(1)", encoding="utf-8")
+
+        app = FastAPI()
+        mount_dashboard(app, dist)
+        self.client = TestClient(app)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_unknown_api_route_is_json_404(self):
+        response = self.client.get("/api/does-not-exist")
+        self.assertEqual(response.status_code, 404)
+        self.assertIn("application/json", response.headers.get("content-type", ""))
+        self.assertEqual(response.json()["detail"], "Not Found")
+
+    def test_reserved_prefixes_all_return_json_404(self):
+        for prefix in ("api/anything", "ws/anything", "metrics/anything", "assets/../api"):
+            response = self.client.get(f"/{prefix}")
+            self.assertEqual(response.status_code, 404, prefix)
+            self.assertIn("application/json", response.headers.get("content-type", ""), prefix)
+
+    def test_real_spa_routes_still_serve_html(self):
+        for route in ("/", "/alerts", "/topology", "/alerts/1234", "/rpki"):
+            response = self.client.get(route)
+            self.assertEqual(response.status_code, 200, route)
+            self.assertIn("text/html", response.headers.get("content-type", ""), route)
+
+    def test_a_real_asset_file_is_still_served(self):
+        response = self.client.get("/assets/app.js")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("console.log", response.text)
+
+
+class _StubSink:
+    """Stands in for GraphSink with the row shape the handler consumes."""
+
+    enabled = True
+
+    def __init__(self, rows):
+        self._rows = rows
+        self.calls = []
+
+    def recent_alerts(self, limit=200, min_severity=None, kind=None, prefix=None):
+        self.calls.append({"limit": limit, "min_severity": min_severity,
+                           "kind": kind, "prefix": prefix})
+        return [dict(row) for row in self._rows][:limit]
+
+
+class TestOwnedOnlyIsConsistentAcrossSources(unittest.TestCase):
+    """`owned_only` reached the memory path and silently skipped the graph path,
+    so the same query returned owned alerts from memory and everything from
+    Neo4j. The `is_owned` flag is persisted on the SecurityAlert node."""
+
+    ROWS = [
+        {"alert_id": "a1", "kind": "HIJACK_ORIGIN", "severity": "CRITICAL",
+         "prefix": "203.0.113.0/24", "origin_as": 64496, "as_path": "64496,1",
+         "is_owned": True, "timestamp": "2026-01-01T00:00:00+00:00"},
+        {"alert_id": "a2", "kind": "ROUTE_LEAK", "severity": "HIGH",
+         "prefix": "8.8.8.0/24", "origin_as": 15169, "as_path": "15169,1",
+         "is_owned": False, "timestamp": "2026-01-01T00:00:01+00:00"},
+    ]
+
+    def _client(self):
+        client = TestClient(create_app())
+        client.app.state.pipeline.sink = _StubSink(self.ROWS)
+        return client
+
+    def test_graph_source_honours_owned_only(self):
+        body = self._client().get("/api/alerts?source=graph&owned_only=true").json()
+        self.assertEqual(body["count"], 1)
+        self.assertEqual(body["alerts"][0]["alert_id"], "a1")
+        self.assertTrue(body["alerts"][0]["is_owned"])
+
+    def test_graph_source_without_owned_only_returns_everything(self):
+        body = self._client().get("/api/alerts?source=graph").json()
+        self.assertEqual(body["count"], 2)
+
+    def test_owned_only_false_is_not_treated_as_truthy(self):
+        body = self._client().get("/api/alerts?source=graph&owned_only=false").json()
+        self.assertEqual(body["count"], 2)
+
+
+class TestWebSocketFanoutIsThreadSafe(unittest.TestCase):
+    """`call_soon_threadsafe(sub.put_nowait, ...)` defers put_nowait onto the
+    event loop, so a full subscriber raises QueueFull *inside* the loop, where
+    the try/except around call_soon_threadsafe cannot see it. The exception
+    escaped into the loop's default handler instead of being counted.
+
+    The loop runs in a thread here, as it does in the real pipeline, because
+    `_publish` bails out when the loop is not running.
+    """
+
+    def setUp(self):
+        import threading
+
+        self.pipeline = Pipeline(Settings.load())
+        self.loop = asyncio.new_event_loop()
+        self.thread = threading.Thread(target=self.loop.run_forever, daemon=True)
+        self.thread.start()
+        self.pipeline._loop = self.loop
+        self.sub = self.pipeline.subscribe()
+        self.queue_size = self.pipeline.settings.api.ws_queue
+        self.loop_errors = []
+        self.loop.set_exception_handler(
+            lambda loop, context: self.loop_errors.append(context))
+
+    def tearDown(self):
+        self.loop.call_soon_threadsafe(self.loop.stop)
+        self.thread.join(timeout=5)
+        self.loop.close()
+
+    def _drain(self):
+        """Let the loop process whatever `_publish` scheduled."""
+        for _ in range(50):
+            self.loop.call_soon_threadsafe(lambda: None)
+            time.sleep(0.01)
+
+    def test_a_full_subscriber_queue_does_not_raise(self):
+        for _ in range(self.queue_size):
+            self.sub.put_nowait({"type": "alert"})
+        self.assertTrue(self.sub.full())
+
+        self.pipeline._publish(_alert())
+        self._drain()
+
+        self.assertEqual(self.loop_errors, [], "QueueFull escaped into the event loop")
+
+    def test_the_drop_is_counted(self):
+        for _ in range(self.queue_size):
+            self.sub.put_nowait({"type": "alert"})
+        self.pipeline._publish(_alert())
+        self._drain()
+        self.assertEqual(self.pipeline.ws_drops(), 1)
+
+    def test_a_healthy_subscriber_still_receives(self):
+        self.pipeline._publish(_alert())
+        self._drain()
+        self.assertEqual(self.sub.qsize(), 1)
+
+    def test_one_full_subscriber_does_not_starve_the_others(self):
+        healthy = self.pipeline.subscribe()
+        for _ in range(self.queue_size):
+            self.sub.put_nowait({"type": "alert"})
+
+        self.pipeline._publish(_alert())
+        self._drain()
+        self.assertEqual(healthy.qsize(), 1)
+        self.assertEqual(self.sub.qsize(), self.queue_size, "the full queue is untouched")
+
+
+def _alert(prefix="203.0.113.0/24"):
+    return Alert(
+        alert_id="ws1", dedup_key="k", timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        kind=Kind.ROUTE_LEAK, severity=Severity.HIGH, confidence=0.9, prefix=prefix,
+        as_path="64496,1", peer_as="1", collector="rrc00", update_id="u1", origin_as=64496,
+        reasons=["test"],
+    )
 
 
 class TestVisibilityLoss(unittest.TestCase):
@@ -524,10 +700,50 @@ class TestConfigGuards(unittest.TestCase):
 
 
 class TestBogonClassification(unittest.TestCase):
-    def test_private_and_reserved_asns(self):
-        for asn in (0, 23456, 64512, 65534, 4200000001, 4294967295):
-            self.assertTrue(is_bogon_asn(asn), f"AS{asn} should be reserved")
-        for asn in (1, 13335, 131072):
+    """Ranges verified against the IANA AS Number Registry (last updated 2026-06-01).
+
+    Reserved is not the same as private use. RFC 6996 private-use ASNs are
+    legitimately deployed inside large networks and do appear in BGP paths, so
+    flagging them as bogons manufactures false positives — 772 of 4 890
+    BOGON_ASN alerts on a live run came from this.
+    """
+
+    def test_reserved_asns_are_bogons(self):
+        for asn in (0, 23456, 64496, 64511, 65535, 65536, 65551, 4294967295):
+            self.assertTrue(is_bogon_asn(asn), f"AS{asn} is IANA-reserved")
+
+    def test_the_65552_to_131071_gap_is_reserved_and_stays_a_bogon(self):
+        for asn in (65552, 65600, 100000, 131071):
+            self.assertTrue(is_bogon_asn(asn), f"AS{asn} is IANA Reserved")
+
+    def test_rfc6996_private_use_asns_are_not_bogons(self):
+        """16-bit and 32-bit private-use ranges are deployed, not reserved."""
+        for asn in (64512, 65000, 65534, 4200000000, 4250000000, 4294967294):
+            self.assertFalse(is_bogon_asn(asn), f"AS{asn} is RFC 6996 private use")
+
+    def test_valid_public_asns_around_the_boundaries_are_not_bogons(self):
+        """Every range boundary, stated explicitly rather than derived."""
+        cases = {
+            64495: False,   # ARIN, last public 16-bit before documentation
+            64496: True,    # RFC 5398 documentation
+            64511: True,    # RFC 5398 documentation, upper bound
+            64512: False,   # RFC 6996 private use begins
+            65534: False,   # RFC 6996 private use ends
+            65535: True,    # RFC 7300 reserved
+            65536: True,    # RFC 5398 documentation, 32-bit side
+            65551: True,
+            131071: True,   # end of the IANA Reserved gap
+            131072: False,  # APNIC allocation begins
+            4199999999: False,  # last unallocated-but-public 32-bit ASN
+            4200000000: False,  # RFC 6996 private use begins
+            4294967294: False,
+            4294967295: True,   # RFC 7300 reserved
+        }
+        for asn, expected in cases.items():
+            self.assertEqual(is_bogon_asn(asn), expected, f"AS{asn}")
+
+    def test_apnic_assigned_32bit_block_is_not_bogon(self):
+        for asn in (131072, 140601, 155961):
             self.assertFalse(is_bogon_asn(asn))
 
     def test_bogon_prefixes(self):

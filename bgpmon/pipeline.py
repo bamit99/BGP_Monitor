@@ -60,6 +60,7 @@ class Pipeline:
         self._alert_lock = threading.Lock()
         self._subscribers: "List[asyncio.Queue]" = []
         self._sub_lock = threading.Lock()
+        self._ws_dropped = 0
         self.visibility_alerts: List[Alert] = []
 
     # ---- lifecycle ----------------------------------------------------
@@ -186,10 +187,22 @@ class Pipeline:
         if not self._loop or not self._loop.is_running():
             return
         for sub in subs:
-            try:
-                self._loop.call_soon_threadsafe(sub.put_nowait, payload)
-            except (RuntimeError, asyncio.QueueFull):
-                continue
+            # call_soon_threadsafe only schedules the put; a full queue raises
+            # QueueFull later, on the loop, where a try/except here cannot see
+            # it. The enqueue therefore has to be the callback that guards, or
+            # the exception reaches the loop's default handler and takes the
+            # connection down with it. A slow reader loses an alert rather than
+            # the whole fanout.
+            self._loop.call_soon_threadsafe(self._enqueue, sub, payload)
+
+    def _enqueue(self, sub: asyncio.Queue, payload: Dict[str, Any]) -> None:
+        try:
+            sub.put_nowait(payload)
+        except asyncio.QueueFull:
+            self._ws_dropped += 1
+
+    def ws_drops(self) -> int:
+        return self._ws_dropped
 
     def subscribe(self) -> asyncio.Queue:
         sub: asyncio.Queue = asyncio.Queue(maxsize=self.settings.api.ws_queue)
@@ -256,6 +269,7 @@ class Pipeline:
             "episodes": self.episodes.stats(),
             "metrics": self.metrics.snapshot(),
             "subscribers": len(self._subscribers),
+            "ws_dropped": self._ws_dropped,
         }
 
 

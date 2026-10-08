@@ -43,6 +43,11 @@ def mount_dashboard(app: FastAPI, dist: Path) -> bool:
 
     @app.get("/{full_path:path}", include_in_schema=False)
     def spa_fallback(full_path: str):
+        # The catch-all is a GET on every path, so without this an unknown
+        # /api/* route resolves to index.html with a 200 and a client debugging
+        # a missing route gets HTML and no signal that it is absent.
+        if full_path.split("/", 1)[0] in {"api", "ws", "metrics", "assets"}:
+            raise HTTPException(status_code=404, detail="Not Found")
         candidate = (dist / full_path).resolve()
         # Serve a real file when asked for one (favicon, manifest), but never
         # escape the build directory via a crafted path.
@@ -62,7 +67,6 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         pipeline.start()
-        app.state.pipeline = pipeline
         try:
             yield
         finally:
@@ -71,10 +75,13 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
 
     app = FastAPI(
         title="BGP Monitor",
-        description="Telecom-grade BGP routing security monitoring",
+        description="BGP routing security monitoring: live ingest, baselined detection, and incident correlation",
         version="2.0.0",
         lifespan=lifespan,
     )
+    # Exposed at construction, not only in the lifespan, so a test can swap the
+    # sink without starting ingest threads and a live Neo4j connection.
+    app.state.pipeline = pipeline
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(settings.api.cors_origins),
@@ -103,6 +110,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                _: None = Depends(require_token)) -> Dict[str, Any]:
         if source in ("auto", "graph") and pipeline.sink.enabled:
             rows = pipeline.sink.recent_alerts(limit=limit, min_severity=severity, kind=kind)
+            # `is_owned` is persisted on the SecurityAlert node, so the graph
+            # path filters on it directly. Skipping this made owned_only return
+            # everything from Neo4j and only owned alerts from memory.
+            if owned_only:
+                rows = [row for row in rows if row.get("is_owned")]
             if rows:
                 return {"source": "graph", "count": len(rows), "alerts": rows}
             if source == "graph":

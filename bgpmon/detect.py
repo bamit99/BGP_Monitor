@@ -40,10 +40,25 @@ from bgpmon.rpki import RPkiEngine, VRPSet
 logger = logging.getLogger(__name__)
 
 # --- reserved space -------------------------------------------------------
+# IANA AS Number Registry, last updated 2026-06-01. Reserved is not the same as
+# private use: the RFC 6996 ranges are legitimately deployed inside large
+# networks and do turn up in BGP paths, so calling them bogons manufactures
+# false positives. On a live run, 772 of 4 890 BOGON_ASN alerts came from them.
+#
+#   0                Reserved                                  RFC 7607
+#   23456            AS_TRANS                                  RFC 6793
+#   64496-64511      Reserved for documentation                RFC 5398
+#   65535            Reserved                                  RFC 7300
+#   65536-65551      Reserved for documentation                RFC 5398
+#   65552-131071     Reserved (unallocated)
+#   4294967295       Reserved                                  RFC 7300
+#
+# Deliberately NOT bogons: 64512-65534 and 4200000000-4294967294 (RFC 6996
+# private use), and 131072-4199999999 (allocated or unallocated public space).
 BOGON_ASN_RANGES = (
-    (0, 0), (23456, 23456), (64496, 64511), (64512, 65534),
+    (0, 0), (23456, 23456), (64496, 64511),
     (65535, 65535), (65536, 65551), (65552, 131071),
-    (4200000000, 4294967294), (4294967295, 4294967295),
+    (4294967295, 4294967295),
 )
 BOGON_V4 = tuple(
     ipaddress.ip_network(p) for p in (
