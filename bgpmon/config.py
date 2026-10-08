@@ -245,17 +245,23 @@ class Settings:
     detection: DetectionSettings
     sink: SinkSettings
     api: ApiSettings
+    # Imported lazily inside from_env to avoid a cycle: scope_resolver reads
+    # CONFIG_DIR and _read_json from this module.
+    scope: "ScopeSettings" = None  # type: ignore[assignment]
     relationship_file: Path = DATA_DIR / "as_relationships.txt.bz2"
     log_level: str = "INFO"
 
     @classmethod
     def load(cls) -> "Settings":
+        from bgpmon.scope_resolver import ScopeSettings
+
         return cls(
             rpki=RPkiSettings.from_env(),
             source=SourceSettings.from_env(),
             detection=DetectionSettings.from_env(),
             sink=SinkSettings.from_env(),
             api=ApiSettings.from_env(),
+            scope=ScopeSettings.from_env(),
             relationship_file=Path(_env("BGPMON_AS_REL_FILE", str(DATA_DIR / "as_relationships.txt.bz2"))),
             log_level=_env("BGPMON_LOG_LEVEL", "INFO") or "INFO",
         )
