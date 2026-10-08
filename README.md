@@ -94,9 +94,11 @@ python -m bgpmon --soak 120   # headless throughput test
 
 ## Configuration
 
-All secrets come from the environment (`.env`, git-ignored). `config/db_config.json`
-was tracked with a plaintext password and has been removed from the index —
-**rotate that credential.**
+All secrets come from the environment (`.env`, git-ignored). The historical
+`config/db_config.json` that carried a plaintext Neo4j password has been
+rotated, deleted, and scrubbed from git history — see
+[Security](#security) below. The engine reads `BGPMON_NEO4J_PASSWORD` from the
+environment only.
 
 | Variable | Purpose |
 |---|---|
@@ -104,17 +106,51 @@ was tracked with a plaintext password and has been removed from the index —
 | `BGPMON_COLLECTORS` | RRC ids only (`route-views.*` is rejected — invalid for RIS Live) |
 | `BGPMON_NEO4J_*` | graph sink connection |
 | `BGPMON_RPKI_RTR_HOST` / `_PORT` | Routinator RTR endpoint |
-| `BGPMON_API_TOKEN` | optional bearer auth for API and WebSocket |
+| `BGPMON_API_TOKEN` | optional bearer auth for API and WebSocket — see the caveat below |
+
+`BGPMON_COLLECTORS` defaults to five RRCs including `rrc24`
+(`bgpmon/config.py:101`); `.env.example` and `docker-compose.yml` set four. The
+benchmark above was measured on four.
+
+**[INSTALL.md](INSTALL.md) is the full configuration reference** — every variable
+with its default, plus what each one silently degrades.
+
+## Security
+
+- **Owned prefixes are empty by default.** Until `BGPMON_OWNED_PREFIXES` is set,
+  the tool runs in observe-only mode: RPKI, leaks and bogons still fire, but
+  hijack/visibility classification has no baseline. This is deliberate — a
+  hijack detector with no authorised set is a false-positive machine.
+- **The Neo4j credential was rotated and the history scrubbed.** It sat in
+  several blobs, including prose that quoted it, so the rewrite used
+  `git filter-repo --replace-text` rather than a path filter. Verified: no ref
+  on GitHub contains the string and the pre-scrub commits are 404 by SHA. Every
+  commit SHA changed, so any hash quoted elsewhere is stale.
+- **`BGPMON_API_TOKEN` is API-only today.** The server enforces it on every
+  `/api/*` route and on `/ws/alerts`, but the bundled dashboard does not send
+  it — the fetch layer omits the `Authorization` header and the WebSocket omits
+  `?token=`. Set it only when a reverse proxy terminates auth in front of the
+  dashboard, or expect every panel to fail with 401.
+- **No secret scanning.** The repo has no pre-commit hook and no GitHub
+  secret-scanning rule for `config/*.json` or `.env`.
+- **Scope is not yet an authorisation source.** Registry-derived scope decides
+  what the dashboard shows; only the RPKI VRP set may mark an origin authorised.
 
 ## Dashboard
 
-React 19 + Vite + Tailwind v4 + shadcn/ui conventions + Recharts, served by
-FastAPI from `web/dist` so deployment is one service.
+React 19 + Vite + Tailwind v4 + Recharts, served by FastAPI from `web/dist` so
+deployment is one service. Components are hand-rolled against Tailwind design
+tokens (`web/src/index.css`); `web/components.json` is present for future
+shadcn/ui use, but no shadcn components are installed.
 
 - **Overview** — ingest rate, alert mix, RPKI set health, latency, queue depth, sparklines
 - **Alerts** — virtualised table, severity/category/text filters, sortable
 - **Topology** — observed AS adjacency (deterministic layout, not a drifting physics sim)
 - **RPKI** — on-demand validation against the local VRP set, honest about `NOT_FOUND`
+
+An ASN/telecom **Scope** lookup and a **scope filter** are specced and planned
+but not yet in `master` — see [ROADMAP.md](ROADMAP.md) and
+`docs/superpowers/specs/`. Until then the Alerts view shows the whole Internet.
 
 ## Detection reference
 
@@ -136,14 +172,12 @@ classification, visibility-loss detection, SPA deep links, and secret handling.
 
 ## Operational notes
 
-- **Owned prefixes are empty by default.** Until `BGPMON_OWNED_PREFIXES` is set,
-  the tool runs in observe-only mode: RPKI, leaks and bogons still fire, but
-  hijack/visibility classification has no baseline. This is deliberate — a
-  hijack detector with no authorised set is a false-positive machine.
 - **ASPA is inert.** No ASPA objects are published in the global RPKI yet (verified:
   RTR v2 emits none). The check reports that state rather than implying coverage.
 - **CAIDA data** is not in git. Fetch it as step 1 of the quick start, or see
   [INSTALL.md](INSTALL.md). Missing data degrades `ROUTE_LEAK` only — the warning
   at startup is the sole symptom, so it is easy to miss.
+- **`ROUTE_LEAK` is the noisiest detector on an unscoped install.** With no owned
+  space configured, expect most alerts to concern other networks.
 - **Startup guide** — [INSTALL.md](INSTALL.md) covers prerequisites, the
   Windows/Podman path, the native route, verification, and troubleshooting.

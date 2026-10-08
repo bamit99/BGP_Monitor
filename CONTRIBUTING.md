@@ -4,7 +4,7 @@ Thank you for your interest in contributing! We welcome contributions from the c
 
 ## How to Contribute
 
-1. **Fork the repository** and create your branch from `main` (or the appropriate development branch).
+1. **Fork the repository** and create your branch from `master` (the default branch).
 2. **Open an issue** to discuss your proposed change if it is significant or a new feature.
 3. **Write clear, well-documented code** and include tests where appropriate.
 4. **Submit a pull request (PR)** with a clear description of your changes and reference any related issues.
@@ -25,6 +25,11 @@ Thank you for your interest in contributing! We welcome contributions from the c
 
 - Add or update tests for any new features or bug fixes.
 - Ensure all tests pass before submitting a PR.
+- Run the Python suite with `python -m pytest tests/ -v`. One test
+  (`TestRtrTransport`) needs a live RTR server on `BGPMON_RPKI_RTR_HOST` and
+  skips without one.
+- The dashboard has no test runner yet; `npm run build` is the gate for
+  frontend changes, and `npm run lint` will fail until `eslint.config.js` lands.
 
 ## Reporting Issues
 
@@ -33,9 +38,9 @@ Thank you for your interest in contributing! We welcome contributions from the c
 
 ## Code of Conduct
 
-- Be respectful and inclusive in all project communications.
-- See [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md) for details.
+Be respectful and inclusive in all project communications.
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the project's open source license.
+By contributing, you agree that your contributions will be licensed under the
+project's open source license.

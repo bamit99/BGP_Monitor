@@ -29,7 +29,7 @@
 
 ## Code of Conduct
 
-- All participants are expected to follow the [Code of Conduct](./CODE_OF_CONDUCT.md).
+- All participants are expected to be respectful and inclusive. There is no separate code of conduct document in this repository yet; the expectation stated in [CONTRIBUTING.md](./CONTRIBUTING.md) applies.
 
 ## Changes to Governance
 
