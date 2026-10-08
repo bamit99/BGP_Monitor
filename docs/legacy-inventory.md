@@ -93,12 +93,26 @@ It also contained the defect the rebuild was built to fix: a
 
 ## Reproducing anything from this branch
 
+`archive/pre-rebuild-master` was deleted once the episode port landed and this
+inventory was written. Before deletion, its contents were reachable with:
+
 ```bash
 git show archive/pre-rebuild-master:utils/episode_manager.py
 git show archive/pre-rebuild-master:project_summary.txt   # per-file summary
 git show archive/pre-rebuild-master:IMPROVEMENT_TRACKER.md
 ```
 
-After the episode port lands and the branch is deleted, the only thing it still
-holds is a full checkout of the above — and the before/after figures already
-transcribed into the `README.md` benchmark table.
+Recover it from GitHub if ever needed:
+
+```bash
+git fetch origin archive/pre-rebuild-master:archive/pre-rebuild-master
+```
+
+What the branch still uniquely held, and where it now lives:
+
+| Was | Is now |
+|---|---|
+| `utils/episode_manager.py` (616 lines) | `bgpmon/episodes.py`, defect-fixed, 35 tests |
+| `IMPROVEMENT_TRACKER.md` | surviving items in `ROADMAP.md` → "Carried over from the pre-rebuild tracker" |
+| `project_summary.txt` | this file |
+| before/after performance figures | the `README.md` benchmark table |
