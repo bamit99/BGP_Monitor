@@ -230,7 +230,6 @@ class PrefixState:
     last_path: str = ""
     path_lengths: Deque[int] = field(default_factory=lambda: deque(maxlen=256))
     collectors: Set[str] = field(default_factory=set)
-    announced_since_loss: Optional[datetime] = None
     loss_reported: Optional[datetime] = None
 
     def observe(self, update: Update) -> None:
@@ -244,7 +243,6 @@ class PrefixState:
             self.last_path = update.as_path
         if update.origin_as is not None and update.as_path_list:
             self.path_lengths.append(len(update.as_path_list))
-        self.announced_since_loss = update.timestamp
 
     def mean_len(self) -> float:
         return sum(self.path_lengths) / len(self.path_lengths) if self.path_lengths else 0.0
