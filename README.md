@@ -59,16 +59,35 @@ applies per-key rate limits plus a global budget.
 ## Quick start
 
 ```bash
-cp .env.example .env          # set NEO4J_PASSWORD and BGPMON_OWNED_PREFIXES
-docker compose up -d --build  # neo4j + routinator + monitor
-open http://localhost:8080    # dashboard
+# 1. Fetch the CAIDA AS relationship graph (1.6 MB). Not in git; without it
+#    ROUTE_LEAK detection stays silent while everything else looks healthy.
+mkdir -p data
+curl -o data/as_relationships.txt.bz2 \
+  https://publicdata.caida.org/datasets/as-relationships/serial-1/20261001.as-rel.txt.bz2
+
+# 2. Configure. NEO4J_PASSWORD is required; set BGPMON_API_PORT if 8080 is taken.
+cp .env.example .env
+
+# 3. Validate, build, start.
+docker compose config --quiet     # exits non-zero until .env is complete
+docker compose up -d --build
+
+# 4. Confirm it is actually ingesting, not just running.
+curl -s http://localhost:8080/api/health
 ```
+
+Open <http://localhost:8080> for the dashboard.
+
+**[INSTALL.md](INSTALL.md) is the full guide** — prerequisites, the Windows/Podman
+path, the native Python route, a configuration reference, how to verify each
+stage, and a troubleshooting table. Start there if any step above fails.
 
 Without Docker:
 
 ```bash
 pip install -r requirements-service.txt -r requirements.txt
 docker run -d --name routinator -p 3323:3323 -p 8323:8323 nlnetlabs/routinator
+cd web && npm ci && npm run build && cd ..
 python -m bgpmon              # API + monitoring
 python -m bgpmon --soak 120   # headless throughput test
 ```
@@ -105,12 +124,15 @@ Every alert kind, its baseline, and its severity semantics are documented in
 ## Tests
 
 ```bash
-python -m pytest tests/test_bgpmon.py -v    # 25 passing
+python -m pytest tests/test_bgpmon.py -v
 ```
 
-Each test pins a defect observed in live output: AS-relationship direction,
-valley-free semantics, alert-per-incident scoping, id consistency, RTR parsing,
-collector validation, bogon classification, and secret handling.
+36 tests. 35 pass on a bare checkout; the RTR transport test needs a live RTR
+server on `BGPMON_RPKI_RTR_HOST` (default `127.0.0.1:3323`) and skips without
+one, so 36 pass once Routinator is up. Each test pins a defect observed in live
+output: AS-relationship direction, valley-free semantics, alert-per-incident
+scoping, id consistency, RTR parsing, collector validation, bogon
+classification, visibility-loss detection, SPA deep links, and secret handling.
 
 ## Operational notes
 
@@ -120,4 +142,8 @@ collector validation, bogon classification, and secret handling.
   hijack detector with no authorised set is a false-positive machine.
 - **ASPA is inert.** No ASPA objects are published in the global RPKI yet (verified:
   RTR v2 emits none). The check reports that state rather than implying coverage.
-- **CAIDA data** is refreshed by re-downloading into `data/`; the file is not in git.
+- **CAIDA data** is not in git. Fetch it as step 1 of the quick start, or see
+  [INSTALL.md](INSTALL.md). Missing data degrades `ROUTE_LEAK` only — the warning
+  at startup is the sole symptom, so it is easy to miss.
+- **Startup guide** — [INSTALL.md](INSTALL.md) covers prerequisites, the
+  Windows/Podman path, the native route, verification, and troubleshooting.
