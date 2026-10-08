@@ -42,7 +42,7 @@ Neo4j        2 188 742 updates + 678 alerts written, 0 failed batches
 Detection    98 µs mean
 ```
 
-## Next: scope your space (unlocks hijack + visibility)
+## Scope: filter your alerts (unlocks hijack + visibility)
 
 **Specced and planned** — see
 `docs/superpowers/specs/2026-10-08-scope-filtering-and-siem-forwarding-design.md`
@@ -52,6 +52,38 @@ Measured motivation: on an unscoped install, 1 723 alerts in the recent window
 contained **zero** concerning a sample operator's ASN and **two** where that ASN
 appeared as transit. The filter is the feature that makes anything else usable.
 
+### Progress
+
+| Task | State | Notes |
+|---|---|---|
+| 1. Auth + loopback bind | **done** | `89015e7` |
+| 2. Scope config + pure matcher | **done** | `62bf515` — ASN normalisation, reported rejections, `ORIGIN`/`SUBSPACE`/`TRANSIT` |
+| 3. Resolution from declared ASNs | **done** | `ea495f8` — one request per ASN, live-verified against AS8220 |
+| 4. API surface + alert filter | **deferred** | plan Task 4 |
+| 5. Pipeline + WebSocket wiring | **deferred** | plan Task 5 |
+| 6. Dashboard scope panel | **deferred** | plan Task 6 |
+| 7. SIEM syslog forwarding | **deferred** | plan Task 7 |
+
+Tasks 2 and 3 are complete and tested but **nothing consumes them yet** — the
+filter is not reachable from the API or the dashboard. That is deliberate for now
+(API work deprioritised 2026-10-08) and it is the reason they are listed as done
+*and* deferred: the library is sound, the surface is not.
+
+Verified live, AS8220 resolving 146 networks (130 IPv4 + 16 IPv6) in 0.8 s:
+
+| Alert | Match |
+|---|---|
+| our prefix, our origin | `ORIGIN, SUBSPACE, TRANSIT` |
+| hijack of our prefix | `SUBSPACE` |
+| customer sub-prefix | `SUBSPACE, TRANSIT` |
+| transit leak through us | `TRANSIT` |
+| an unrelated network | *(none — filtered out)* |
+
+**Known limitation.** Resolution starts from current announcements, so space held
+in IRR but not announced is not discovered. Finding it needs a RIPE DB reverse
+query (`filter?attribute=origin&value=AS…`). `extra_prefixes` is the manual
+override until then.
+
 The load-bearing design decision: **scope (registry-derived, decides what you look
 at) and authorised space (RPKI-derived, the only thing that may mark an origin
 legitimate) are deliberately separate objects.** Feeding IRR data into a CRITICAL
@@ -59,25 +91,38 @@ detector produces both false positives (space you sub-let, announced legitimatel
 by the customer) and false negatives (stale IRR means no baseline at all).
 
 1. **Declare ASNs, derive space.** `config/scope.json` lists the ASNs you operate;
-   the tool resolves them to prefixes via RIPEstat. Verified that registry data
-   distinguishes own space from customer space in one call — `62.23.0.0/16`
-   returns `origin: 8220` on the /16 (`descr: FR-COLT-FRANCE`) and on seven /24s
-   inside it with `descr: TATA IZO`.
+   the tool resolves them to prefixes via RIPEstat, one request per ASN. Shipped
+   in `bgpmon/scope_resolver.py`. Customer space arrives through the same lookup,
+   because an operator announcing a customer's block *is* that customer's origin
+   ASN — verified: AS8220 announces `62.23.14.0/24` with `origin: 8220` and
+   `descr: TATA IZO`.
 2. **Match reasons, not a boolean.** `ORIGIN` (you announce it), `SUBSPACE` (a
-   more-specific of your space), `TRANSIT` (your ASN in the AS path). Shown
-   individually, so an empty view explains itself instead of looking broken.
-3. **Scope entered through the UI**, persisted to `config/scope.json`. This makes
-   working auth a prerequisite, not an optional extra — the write endpoint changes
-   which alerts an operator sees, and a shared bearer token cannot say who changed it.
-4. **SIEM forwarding over syslog RFC 5424/TCP**, gated on scope. Vendor-neutral so
+   more-specific of your space), `TRANSIT` (your ASN in the AS path). Shipped in
+   `bgpmon/scope_match.py`, and shown individually so an empty view explains
+   itself instead of looking broken.
+3. **Expose the filter** — the remaining work, in order:
+   a. `GET/POST /api/scope` and `/api/scope/refresh`, and `GET /api/alerts?scope=`
+      (plan Task 4). **Deferred 2026-10-08 — API work deprioritised.**
+   b. Attach `scope_reason` to emitted alerts and the WebSocket (Task 5)
+   c. Editable scope panel on `/scope`, toggle plus reason chips on `/alerts`,
+      the "N concern you" split on Overview (Task 6)
+   d. SIEM forwarding over syslog RFC 5424/TCP, gated on scope (Task 7)
+
+   Until (a) lands, the scope library is built and tested but unreachable — the
+   dashboard still shows the whole Internet.
    Sentinel, Splunk HEC and QRadar all ingest it unchanged.
+
+## Still to ship alongside the scope filter
+
 1. **Ship the untracked scope lookup** — `bgpmon/scope.py` and
    `web/src/views/Scope.tsx` exist in the working tree but are untracked, while
-   their four integration points (`bgpmon/api.py`, `web/src/App.tsx`,
-   `web/src/lib/api.ts`, `web/src/lib/types.ts`) are modified and uncommitted.
+   `web/src/App.tsx` and `web/src/lib/types.ts` are modified and uncommitted.
    Ship as one commit with tests, or shelve it — do not leave it half-staged.
    Rename `scope.py` to `scope_lookup.py` first, so the name does not collide
-   with a future `scope` CLI subcommand.
+   with `bgpmon/scope_match.py` / `bgpmon/scope_resolver.py` or a future `scope`
+   CLI subcommand.
+   Also: `web/tsconfig.tsbuildinfo` is untracked and **not** in `.gitignore`, so
+   a bare `git add -A` would commit a build artefact. Add `*.tsbuildinfo` first.
 2. **Visibility tuning for a large cone** — after scope exists, start at 15 min
    grace across ≥2 collectors, then measure observed per-prefix collector counts
    for a day and tune `BGPMON_VISIBILITY_GRACE` from data rather than guesswork.
