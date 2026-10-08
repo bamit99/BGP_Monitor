@@ -16,6 +16,7 @@ httpx>=0.27,<1             # required by bgpmon/scope.py at module scope
 # the legacy requirements file; the advisories still apply to the same
 # packages here, so the audited minimums are kept as explicit floors.
 requests>=2.33.0,<3      # 2 advisories fixed (was 2.32.5)
-urllib3>=2.7.0,<3        # 4 advisories fixed (transitive via requests)
+urllib3>=2.8.0,<3        # 7 advisories fixed (transitive via requests): TLS proxy
+                          # override, chunked-deflate loop, unbounded chunk line
 idna>=3.15,<4            # 2 advisories fixed (transitive via requests)
 click>=8.3.3,<9          # 1 advisory fixed (transitive via uvicorn)
