@@ -304,6 +304,23 @@ class TestOwnedOnlyIsConsistentAcrossSources(unittest.TestCase):
         self.assertEqual(body["count"], 2)
 
 
+class TestVisibilityAlertsIsNotRetained(unittest.TestCase):
+    """Pipeline kept a second `visibility_alerts` list that was appended to on
+    every VISIBILITY_LOSS and read by nothing. It reached 91,044 Alert objects
+    in 30 minutes, growing linearly with uptime for no benefit."""
+
+    def test_no_unbounded_alert_list_is_retained(self):
+        pipeline = Pipeline(Settings.load())
+        self.assertFalse(hasattr(pipeline, "visibility_alerts"))
+        # _subscribers is bounded by the number of connected clients;
+        # recent_alerts is trimmed to ALERT_BUFFER. Nothing else may accumulate.
+        retained = [
+            name for name, value in vars(pipeline).items()
+            if isinstance(value, list) and name not in ("recent_alerts", "_subscribers")
+        ]
+        self.assertEqual(retained, [], "unexpected retained lists on Pipeline")
+
+
 class TestWebSocketFanoutIsThreadSafe(unittest.TestCase):
     """`call_soon_threadsafe(sub.put_nowait, ...)` defers put_nowait onto the
     event loop, so a full subscriber raises QueueFull *inside* the loop, where

@@ -61,7 +61,6 @@ class Pipeline:
         self._subscribers: "List[asyncio.Queue]" = []
         self._sub_lock = threading.Lock()
         self._ws_dropped = 0
-        self.visibility_alerts: List[Alert] = []
 
     # ---- lifecycle ----------------------------------------------------
     def start(self) -> None:
@@ -248,7 +247,6 @@ class Pipeline:
                 logger.error("Visibility check failed: %s", exc)
                 continue
             for alert in alerts:
-                self.visibility_alerts.append(alert)
                 self.metrics.record_alert(alert.kind.value, alert.severity.value)
                 self.sink.submit_alert(alert)
                 self._record_recent(alert)
