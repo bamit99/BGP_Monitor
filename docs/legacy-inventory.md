@@ -8,6 +8,8 @@ matters.
 **30 Python files, 7 773 lines.** The credential history scrub rewrote commit
 SHAs across both branches but did not touch this branch's contents.
 
+**Branch deleted 2026-10-08, tip tagged `archive-pre-rebuild-2026-10-08`.**
+
 ## Decision
 
 The tool is **web-only**. Everything Tkinter is dead by decision, not by
@@ -93,26 +95,29 @@ It also contained the defect the rebuild was built to fix: a
 
 ## Reproducing anything from this branch
 
-`archive/pre-rebuild-master` was deleted once the episode port landed and this
-inventory was written. Before deletion, its contents were reachable with:
+`archive/pre-rebuild-master` was deleted on 2026-10-08 once the episode port
+landed and this inventory was written. The tip was **tagged** first:
 
-```bash
-git show archive/pre-rebuild-master:utils/episode_manager.py
-git show archive/pre-rebuild-master:project_summary.txt   # per-file summary
-git show archive/pre-rebuild-master:IMPROVEMENT_TRACKER.md
+```
+archive-pre-rebuild-2026-10-08  ->  4983f79
 ```
 
-Recover it from GitHub if ever needed:
+Deleting a branch alone would have been wrong: unreferenced commits get
+garbage-collected, so the tree would not reliably have been recoverable. The tag
+is a permanent, named, zero-cost reference. Retrieve it with:
 
 ```bash
-git fetch origin archive/pre-rebuild-master:archive/pre-rebuild-master
+git fetch origin 'refs/tags/archive-pre-rebuild-2026-10-08:refs/tags/archive-pre-rebuild-2026-10-08'
+git show archive-pre-rebuild-2026-10-08:utils/episode_manager.py
+git show archive-pre-rebuild-2026-10-08:project_summary.txt    # per-file summary
+git show archive-pre-rebuild-2026-10-08:IMPROVEMENT_TRACKER.md
 ```
 
-What the branch still uniquely held, and where it now lives:
+What the branch uniquely held, and where it now lives:
 
 | Was | Is now |
 |---|---|
-| `utils/episode_manager.py` (616 lines) | `bgpmon/episodes.py`, defect-fixed, 35 tests |
+| `utils/episode_manager.py` (616 lines) | `bgpmon/episodes.py`, defect-fixed, wired into the pipeline, 35 tests |
 | `IMPROVEMENT_TRACKER.md` | surviving items in `ROADMAP.md` → "Carried over from the pre-rebuild tracker" |
 | `project_summary.txt` | this file |
 | before/after performance figures | the `README.md` benchmark table |
