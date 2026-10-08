@@ -1,40 +1,46 @@
-# BGP Monitor — telecom-grade rebuild
+# BGP Monitor
 
-## Status: implemented and verified
+Streaming BGP routing security monitoring. Ingests live RIPE RIS Live updates,
+validates every announcement against the local RPKI set and a real AS
+relationship graph, and surfaces only what is worth a NOC's attention.
 
-The previous revision was a proof of concept: it connected to RIS Live and had
-heuristics, but it could not sustain a real feed (0.2 RPKI lookups/s), alerted on
-7% of all updates, silently discarded updates, and never linked an alert to the
-update that caused it. This rebuild targets NOC operation.
+Web-only. No API key is needed to run it — RIS Live, Routinator and CAIDA are all
+public.
 
-**Measured on live RIS Live (4 collectors, rrc00/rrc01/rrc11/rrc12) against Neo4j 5.26:**
+![Overview dashboard](docs/images/overview.png)
 
-| Metric | Before | After |
-|---|---|---|
-| RPKI verdicts | 0.2 lookups/s (RIPEstat, rate-limited to `UNKNOWN`) | **71 000+ lookups/s**, 1 013 990 VRPs indexed locally in 11 s |
-| Ingest throughput | analyzer capped at ~21 updates/min | **2 662 updates/s**, sustained, 0 dropped |
-| Alert rate | 7.08% of updates (1 007 prepend alerts in 120 s) | **0.21%**, and falling as baselines stabilise |
-| Detection latency | blocking HTTP per update | **112–150 µs/update** |
-| Graph writes | 1 transaction per announcement | **419 764 updates** batched, **0 failed batches** |
-| Alert→update link | 0 edges ever created | deterministic shared id, edge resolves |
-| Invalid collectors | 14 of 30 entries dead (Route Views ids) | RRC-only, validated at config load |
+## What it does
 
-## Architecture
+- **Ingests live BGP updates** from RIPE RIS Live over WebSocket, across four RRC
+  collectors, with explicit subscription acknowledgement and a bounded queue.
+- **Validates every prefix** against a locally indexed RPKI VRP set synced over
+  RTR — cryptographically derived, not a heuristic.
+- **Detects route leaks** by RFC 7908 valley-free checking against CAIDA's
+  directed AS relationship graph (525 848 edges).
+- **Correlates alerts into incidents**, so one hijack or one leaky pair is one
+  episode rather than a thousand alerts.
+- **Streams to a React console** over WebSocket, served by the same process, and
+  exposes Prometheus metrics and a JSON API.
+- **Forwards to a SIEM** over syslog RFC 5424, so the SIEM stays the system of
+  record.
 
-```mermaid
-flowchart LR
-  RIS[RIS Live<br/>RRC collectors] -->|asyncio| C[Collector<br/>normalise + bounded queue]
-  C --> W[Detection worker<br/>single thread, no I/O]
-  R[Routinator<br/>RTR :3323] -->|1M VRPs, 11s sync| RPKI[RPKI engine<br/>in-process index]
-  CAIDA[CAIDA as-rel<br/>525k relationships] --> G[AS graph<br/>directed p2c/p2p]
-  RPKI --> W
-  G --> W
-  W --> Gate[Alert gate<br/>dedup + budget]
-  Gate --> N[(Neo4j<br/>batched write-behind)]
-  Gate --> WS[WebSocket fanout]
-  WS --> UI[React dashboard]
-  W --> M[Prometheus /metrics]
-```
+## Measured on live traffic
+
+Four collectors, Neo4j 5.26, sustained:
+
+| | |
+|---|---|
+| Ingest | **4 430 updates/s**, 19 252 402 updates, **0 dropped** |
+| Detection | **102 µs** mean per update, single-threaded |
+| RPKI | **891 033 prefixes** indexed, synced over RTR |
+| Routing table observed | 1 253 530 prefixes tracked |
+| Graph writes | 17 194 310 updates + 102 857 alerts, **0 failed batches** |
+| Leak detection | RFC 7908 over 525 848 AS relationships |
+
+The dashboard above is a real capture from this stack, not a mockup. Throughput
+history builds while the page stays open.
+
+![Alerts dashboard](docs/images/alerts.png)
 
 ## Detection
 
@@ -45,139 +51,185 @@ Every detector is baselined, so "unexpected" is distinguishable from "merely new
 | `HIJACK_ORIGIN` | owned prefix + authorised/RPKI-valid origins | CRITICAL |
 | `HIJACK_SUB_PREFIX` | more-specific of owned/critical space, RPKI-valid splits exempt | HIGH |
 | `RPKI_INVALID` | local VRP set, RFC 6811 | CRITICAL if owned, else HIGH |
-| `ROUTE_LEAK` | RFC 7908 valley-free on directed CAIDA graph, unknown edges never accused | HIGH |
+| `ROUTE_LEAK` | RFC 7908 valley-free on the directed CAIDA graph | HIGH |
 | `BOGON_ASN` / `BOGON_PREFIX` | reserved ASN ranges and RFC 6890 space | HIGH |
 | `VISIBILITY_LOSS` | owned prefix absent past grace across ≥2 collectors | CRITICAL |
 | `NEW_PREFIX` | monitored AS announcing unseen space | MEDIUM |
 | `LONG_PATH` | per-prefix path-length distribution, z-score | MEDIUM |
 | `PREPEND` | watched/owned origins only | LOW |
 
-Alert volume is controlled by construction: leaks are keyed by offending AS pair
-(one incident ≠ 1 000 alerts), anomalous paths by origin+length, and the gate
-applies per-key rate limits plus a global budget.
+Alert volume is controlled by construction rather than by blanket suppression:
+leaks are keyed by offending AS pair (one incident ≠ 1 000 alerts), anomalous
+paths by origin+length, and the gate applies per-key rate limits plus a global
+budget. Two unknown-edge conservatisms are deliberate: a path containing an AS
+whose relationship is absent from CAIDA is **not judged**, and a first sighting of
+a new origin is held for corroboration before it pages.
 
-## Quick start
+Full semantics, including what each severity means and why:
+[Logic.md](Logic.md).
+
+## Features
+
+### Ingest
+- Async RIS Live client, RRC-only (Route Views ids are rejected at config load)
+- Explicit `ris_subscribe` acknowledgement, with the first real update kept if it
+  races the ack
+- Bounded queue with drop accounting, reconnect backoff, stale-session detection
+
+### RPKI
+- RTR client against Routinator; ~890k prefixes indexed in-process in seconds
+- Local VRP set decides every verdict; RIPEstat consulted only when the local set
+  cannot answer at all
+- `NOT_FOUND` reported honestly — absence of a ROA is not a routing fault
+
+### Leaks
+- RFC 7908 valley-free evaluation in propagation order
+- Directed p2c/p2p graph, so reversing a path yields the correct relationship
+- Unknown hops silence the check rather than manufacturing suspicion
+
+### Incidents
+- Alerts grouped into episodes by `(prefix, origin)` within a time window
+- Severity-weighted scoring, RPKI and critical-prefix multipliers
+- Widest AS-path change per episode, as an explainable disturbance measure
+- `GET /api/episodes`; session-scoped, so a restart mid-incident starts a new one
+
+### Console
+React 19 + Vite + Tailwind v4, served from the same FastAPI process.
+
+- **Overview** — ingest rate, alert mix, RPKI health, latency, queue depth, priority queue
+- **Alerts** — virtualised table, severity/kind/text filters, sortable, live via WebSocket
+- **Topology** — observed AS adjacency, deterministic layout
+- **Scope** — ASN or operator-name lookup with live RPKI state per prefix
+- **RPKI** — on-demand validation against the local VRP set
+
+### Operations
+- Prometheus `/metrics`, `/api/health`, structured feed/sink/gate counters
+- Syslog RFC 5424 sink, vendor-neutral and TCP
+- Secrets from the environment only; the published port binds loopback
+
+## Architecture
+
+```mermaid
+flowchart LR
+  RIS[RIS Live<br/>RRC collectors] -->|asyncio| C[Collector<br/>normalise + bounded queue]
+  C --> W[Detection worker<br/>single thread, no I/O]
+  R[Routinator<br/>RTR :3323] -->|VRPs, seconds| RPKI[RPKI engine<br/>in-process index]
+  CAIDA[CAIDA as-rel<br/>525k relationships] --> G[AS graph<br/>directed p2c/p2p]
+  RPKI --> W
+  G --> W
+  W --> Gate[Alert gate<br/>dedup + budget]
+  Gate --> E[Episode correlator]
+  E --> N[(Neo4j<br/>batched write-behind)]
+  E --> SIEM[Syslog RFC 5424]
+  Gate --> WS[WebSocket fanout]
+  WS --> UI[React console]
+  W --> M[Prometheus /metrics]
+```
+
+## Getting started
+
+**Full guide: [INSTALL.md](INSTALL.md)** — prerequisites, container and native
+routes, Windows/Podman, verification, and troubleshooting.
+
+The short version:
 
 ```bash
-# 1. Fetch the CAIDA AS relationship graph (1.6 MB). Not in git; without it
-#    ROUTE_LEAK detection stays silent while everything else looks healthy.
+# 1. Fetch the CAIDA AS relationship graph (1.6 MB). Not in git.
 mkdir -p data
 curl -o data/as_relationships.txt.bz2 \
   https://publicdata.caida.org/datasets/as-relationships/serial-1/20261001.as-rel.txt.bz2
 
-# 2. Configure. NEO4J_PASSWORD is required; set BGPMON_API_PORT if 8080 is taken.
-cp .env.example .env
+# 2. Configure
+cp .env.example .env          # set NEO4J_PASSWORD; set BGPMON_API_PORT if 8080 is taken
 
-# 3. Validate, build, start.
-docker compose config --quiet     # exits non-zero until .env is complete
+# 3. Validate, build, start
+docker compose config --quiet
 docker compose up -d --build
 
-# 4. Confirm it is actually ingesting, not just running.
+# 4. Confirm it is ingesting, not just running
 curl -s http://localhost:8080/api/health
-```
-
-Open <http://localhost:8080> for the dashboard.
-
-**[INSTALL.md](INSTALL.md) is the full guide** — prerequisites, the Windows/Podman
-path, the native Python route, a configuration reference, how to verify each
-stage, and a troubleshooting table. Start there if any step above fails.
-
-Without Docker:
-
-```bash
-pip install -r requirements-service.txt -r requirements.txt
-docker run -d --name routinator -p 3323:3323 -p 8323:8323 nlnetlabs/routinator
-cd web && npm ci && npm run build && cd ..
-python -m bgpmon              # API + monitoring
-python -m bgpmon --soak 120   # headless throughput test
 ```
 
 ## Configuration
 
-All secrets come from the environment (`.env`, git-ignored). The historical
-`config/db_config.json` that carried a plaintext Neo4j password has been
-rotated, deleted, and scrubbed from git history — see
-[Security](#security) below. The engine reads `BGPMON_NEO4J_PASSWORD` from the
-environment only.
+Secrets come from the environment — `.env` for compose, your shell for a native
+run. `.env` is git-ignored.
 
 | Variable | Purpose |
 |---|---|
 | `BGPMON_OWNED_PREFIXES` | your originated space; drives hijack and visibility alerts |
-| `BGPMON_COLLECTORS` | RRC ids only (`route-views.*` is rejected — invalid for RIS Live) |
-| `BGPMON_NEO4J_*` | graph sink connection |
+| `BGPMON_COLLECTORS` | RRC ids only |
+| `BGPMON_NEO4J_URI` / `_USER` / `_PASSWORD` | graph sink |
 | `BGPMON_RPKI_RTR_HOST` / `_PORT` | Routinator RTR endpoint |
-| `BGPMON_API_TOKEN` | optional bearer auth for API and WebSocket — see the caveat below |
+| `BGPMON_API_TOKEN` | optional bearer auth for API and WebSocket |
+| `BGPMON_VISIBILITY_GRACE` | seconds before an unseen owned prefix is a `VISIBILITY_LOSS` |
 
-`BGPMON_COLLECTORS` defaults to five RRCs including `rrc24`
-(`bgpmon/config.py:101`); `.env.example` and `docker-compose.yml` set four. The
-benchmark above was measured on four.
+**Every variable, with defaults and what it silently degrades:**
+[INSTALL.md](INSTALL.md#configuration-reference).
 
-**[INSTALL.md](INSTALL.md) is the full configuration reference** — every variable
-with its default, plus what each one silently degrades.
+Two defaults worth knowing:
+
+- **Owned prefixes are empty**, so hijack and visibility classification are
+  dormant by design — a detector with no authorised set is a false-positive
+  machine. RPKI, leaks and bogons still fire.
+- **`BGPMON_API_TOKEN` is API-only.** The server enforces it on every `/api/*`
+  route and on the WebSocket; the bundled console sends it only when
+  `VITE_API_TOKEN` is set at build time.
+
+## API
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/api/health` | pipeline, RPKI, sink, gate and episode state |
+| `GET` | `/api/alerts` | alert history, filterable by severity, kind and source |
+| `GET` | `/api/episodes` | open incidents, ranked by score |
+| `GET` | `/api/prefix/{prefix}/history` | announcements seen for a prefix |
+| `GET` | `/api/topology` | observed AS adjacency |
+| `GET` | `/api/scope/search` | ASN or operator lookup with RPKI state |
+| `GET` | `/api/rpki/{prefix}/{origin}` | on-demand validation with matched and offending VRPs |
+| `GET` | `/api/config` | effective configuration |
+| `GET` | `/metrics` | Prometheus exposition |
+| `WS` | `/ws/alerts` | live alert stream with a snapshot on connect |
+
+All routes except `/api/health` and `/metrics` require the bearer token when one
+is configured.
+
+## Development
+
+```bash
+python -m pytest tests/ -v        # 141 tests
+cd web && npm ci && npm run build # console
+python -m bgpmon --soak 120       # headless throughput report
+```
+
+Each test pins a defect observed in live output: AS-relationship direction,
+valley-free semantics, alert-per-incident scoping, id consistency, RTR parsing,
+collector validation, bogon classification, visibility-loss detection, SPA deep
+links, incident correlation, scope matching, and secret handling.
+
+## Roadmap
+
+**[ROADMAP.md](ROADMAP.md)** carries the full tracker. The items that matter most:
+
+| | Item | Why |
+|---|---|---|
+| 1 | **Scope filter** — declare your ASNs, see only your alerts | On an unscoped install, 1 723 alerts in the recent window contained **two** concerning one operator's ASN. The library is built and tested; the API and console surface are what remain |
+| 2 | **SIEM forwarding** — syslog RFC 5424 over TCP | The sink contract and gating are specced; not yet wired |
+| 3 | **Seasonal `LONG_PATH` baseline** | Currently z-scores a 256-sample in-memory deque that resets on restart and models no seasonality, while path length is strongly diurnal |
+| 4 | **Enterprise deployment** | Reverse proxy for TLS, login screen, authorisation and audit with real identity. The app stays loopback-bound; the proxy terminates TLS |
+| 5 | **ROA change detection**, ASPA, RFC 9234 peer-lock | Engine features, tracked |
 
 ## Security
 
-- **Owned prefixes are empty by default.** Until `BGPMON_OWNED_PREFIXES` is set,
-  the tool runs in observe-only mode: RPKI, leaks and bogons still fire, but
-  hijack/visibility classification has no baseline. This is deliberate — a
-  hijack detector with no authorised set is a false-positive machine.
-- **The Neo4j credential was rotated and the history scrubbed.** It sat in
-  several blobs, including prose that quoted it, so the rewrite used
-  `git filter-repo --replace-text` rather than a path filter. Verified: no ref
-  on GitHub contains the string and the pre-scrub commits are 404 by SHA. Every
-  commit SHA changed, so any hash quoted elsewhere is stale.
-- **`BGPMON_API_TOKEN` is API-only today.** The server enforces it on every
-  `/api/*` route and on `/ws/alerts`, but the bundled dashboard does not send
-  it — the fetch layer omits the `Authorization` header and the WebSocket omits
-  `?token=`. Set it only when a reverse proxy terminates auth in front of the
-  dashboard, or expect every panel to fail with 401.
-- **No secret scanning.** The repo has no pre-commit hook and no GitHub
-  secret-scanning rule for `config/*.json` or `.env`.
-- **Scope is not yet an authorisation source.** Registry-derived scope decides
-  what the dashboard shows; only the RPKI VRP set may mark an origin authorised.
+- The published port binds **loopback**. For remote access, put a
+  TLS-terminating reverse proxy in front of it rather than widening the bind.
+  `docker port` reports `0.0.0.0` regardless of what the host listens on; treat
+  that output as no evidence either way.
+- All secrets come from the environment. Nothing sensitive is baked into an image
+  or committed.
+- Detection trusts only the RPKI VRP set to mark an origin authorised. Registry
+  and IRR data inform scope — what you look at — and never what is a violation.
 
-## Dashboard
+## Licence
 
-React 19 + Vite + Tailwind v4 + Recharts, served by FastAPI from `web/dist` so
-deployment is one service. Components are hand-rolled against Tailwind design
-tokens (`web/src/index.css`); `web/components.json` is present for future
-shadcn/ui use, but no shadcn components are installed.
-
-- **Overview** — ingest rate, alert mix, RPKI set health, latency, queue depth, sparklines
-- **Alerts** — virtualised table, severity/category/text filters, sortable
-- **Topology** — observed AS adjacency (deterministic layout, not a drifting physics sim)
-- **RPKI** — on-demand validation against the local VRP set, honest about `NOT_FOUND`
-
-An ASN/telecom **Scope** lookup and a **scope filter** are specced and planned
-but not yet in `master` — see [ROADMAP.md](ROADMAP.md) and
-`docs/superpowers/specs/`. Until then the Alerts view shows the whole Internet.
-
-## Detection reference
-
-Every alert kind, its baseline, and its severity semantics are documented in
-[Logic.md](Logic.md). Tuning lives in `DetectionSettings` (`bgpmon/config.py`).
-
-## Tests
-
-```bash
-python -m pytest tests/test_bgpmon.py -v
-```
-
-36 tests. 35 pass on a bare checkout; the RTR transport test needs a live RTR
-server on `BGPMON_RPKI_RTR_HOST` (default `127.0.0.1:3323`) and skips without
-one, so 36 pass once Routinator is up. Each test pins a defect observed in live
-output: AS-relationship direction, valley-free semantics, alert-per-incident
-scoping, id consistency, RTR parsing, collector validation, bogon
-classification, visibility-loss detection, SPA deep links, and secret handling.
-
-## Operational notes
-
-- **ASPA is inert.** No ASPA objects are published in the global RPKI yet (verified:
-  RTR v2 emits none). The check reports that state rather than implying coverage.
-- **CAIDA data** is not in git. Fetch it as step 1 of the quick start, or see
-  [INSTALL.md](INSTALL.md). Missing data degrades `ROUTE_LEAK` only — the warning
-  at startup is the sole symptom, so it is easy to miss.
-- **`ROUTE_LEAK` is the noisiest detector on an unscoped install.** With no owned
-  space configured, expect most alerts to concern other networks.
-- **Startup guide** — [INSTALL.md](INSTALL.md) covers prerequisites, the
-  Windows/Podman path, the native route, verification, and troubleshooting.
+See [LICENSE](LICENSE).
