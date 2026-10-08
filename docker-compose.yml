@@ -46,9 +46,15 @@ services:
       routinator:
         condition: service_started
     ports:
-      # Host port is parameterised: 8080 is reserved by a Windows service on
-      # some hosts (WinNAT excluded range), and compose should not care.
-      - "${BGPMON_API_PORT:-8080}:8080"
+      # Loopback by default. The scope write endpoint changes which alerts an
+      # operator sees, and an unguarded one silently blinds them. For remote
+      # access, put a TLS-terminating reverse proxy (nginx/Caddy) in front of
+      # this loopback bind rather than widening it — see ROADMAP.md
+      # "Deployment: enterprise target".
+      #
+      # `docker port` reports 0.0.0.0 regardless of what the host actually
+      # listens on; that output is not evidence either way.
+      - "127.0.0.1:${BGPMON_API_PORT:-8080}:8080"
     environment:
       BGPMON_API_HOST: "0.0.0.0"
       BGPMON_API_PORT: "8080"

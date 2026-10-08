@@ -1,9 +1,39 @@
 import { useQuery } from "@tanstack/react-query";
-import type { AlertResponse, Health, RPKIResult, Topology } from "./types";
+import type { AlertResponse, Health, RPKIResult, ScopeSearchResponse, Topology } from "./types";
+
+/**
+ * Build-time only: a Vite env var is inlined into the bundle at `vite build`.
+ * A runtime token would need a settings input and a secret store, which is
+ * part of the enterprise deployment work in ROADMAP.md.
+ */
+export const apiToken = (): string => import.meta.env.VITE_API_TOKEN ?? "";
+
+export function apiHeaders(): Record<string, string> {
+  const headers: Record<string, string> = { Accept: "application/json" };
+  const token = apiToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  return headers;
+}
+
+/**
+ * The most likely 401 by far is a token configured on the server but not baked
+ * into the bundle. Say so, rather than showing a bare 401 the operator will
+ * read as a broken dashboard.
+ */
+function describeFailure(res: Response, url: string): string {
+  if (res.status === 401 && !apiToken()) {
+    return (
+      `401 for ${url}: the server has BGPMON_API_TOKEN set but this dashboard was built ` +
+      `without VITE_API_TOKEN. Set VITE_API_TOKEN in web/.env to the same value and ` +
+      `rebuild (npm run build), or clear BGPMON_API_TOKEN on the server.`
+    );
+  }
+  return `${res.status} ${res.statusText} for ${url}`;
+}
 
 async function getJSON<T>(url: string): Promise<T> {
-  const res = await fetch(url, { headers: { Accept: "application/json" } });
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText} for ${url}`);
+  const res = await fetch(url, { headers: apiHeaders() });
+  if (!res.ok) throw new Error(describeFailure(res, url));
   return (await res.json()) as T;
 }
 
@@ -42,5 +72,14 @@ export function useRpkiCheck(prefix: string, originAs: number | null) {
     queryFn: () => getJSON<RPKIResult>(`/api/rpki/${prefix}/${originAs}`),
     enabled: Boolean(prefix) && originAs !== null && originAs > 0,
     retry: false,
+  });
+}
+
+export function useScopeSearch(query: string) {
+  return useQuery({
+    queryKey: ["scope", query],
+    queryFn: () => getJSON<ScopeSearchResponse>(`/api/scope/search?q=${encodeURIComponent(query)}`),
+    enabled: Boolean(query),
+    retry: 1,
   });
 }

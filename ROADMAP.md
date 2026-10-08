@@ -214,6 +214,41 @@ shipped above or obsolete.
 4. **Documentation and runbooks** — NOC-facing material: what each alert kind means,
    first-response actions, escalation, and false-positive history for tuning
 
+## Deployment: enterprise target (stated 2026-10-08)
+
+Intended end state: a dedicated server in the operator's office, dashboard over
+HTTPS with a real login, reachable remotely. Not a local dashboard.
+
+The application shape stays as-is — **bind loopback, terminate TLS at a reverse
+proxy**. Cert renewal, HSTS, rate limiting and connection limits belong in
+nginx/Caddy, not in the Python process. Do not move the app to a public bind.
+
+That target changes one committed ruling. The scope spec deferred per-user
+identity and recorded the consequence: a shared bearer token can show *that*
+scope changed, never *who*. With a login screen that stops being acceptable,
+because scope decides which alerts an operator sees.
+
+Sequence, roughly:
+
+1. **Reverse proxy** — nginx or Caddy in front of the loopback bind, TLS cert,
+   HSTS, request-size and rate limits. Small, and unblocks remote access.
+2. **Authentication** — a login screen means sessions, not a bearer header.
+   Decide the identity source before building: OIDC/SAML against the office IdP,
+   LDAP, or local accounts. Each changes the storage and the session model.
+3. **Authorisation** — at minimum, who may edit scope. Scope write is currently
+   any valid token, which is too broad once there are several people.
+4. **Audit with identity** — the existing `last_change` ring records that scope
+   changed. It needs the actor. Until then it is a debugging aid, not an audit
+   trail, and should not be described as one.
+5. **Per-user state** — filter persistence in `localStorage` becomes per-user;
+   see Console item 2.
+6. **Availability** — the Neo4j and Routinator volumes are currently local. A
+   single office server needs a restore story for the graph, and the RPKI cache
+   must survive a restart or the first sync blocks startup.
+
+Before any of this: scope and SIEM forwarding are still unbuilt. A login screen
+in front of a firehose is not an enterprise tool.
+
 ## Infra
 
 1. **CI** — GitHub Actions running `pytest` + `npm run build` on PR; the repo has no CI today.

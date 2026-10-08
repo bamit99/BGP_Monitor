@@ -25,7 +25,12 @@ export function useAlertStream(enabled = true) {
       if (cancelled) return;
       setStatus("connecting");
       const proto = window.location.protocol === "https:" ? "wss" : "ws";
-      const ws = new WebSocket(`${proto}://${window.location.host}/ws/alerts`);
+      // The server closes the socket 4401 without a token (api.py). Build-time
+      // value; see api.ts for why it is not read from the server.
+      const url = new URL("/ws/alerts", `${proto}://${window.location.host}`);
+      const token = import.meta.env.VITE_API_TOKEN;
+      if (token) url.searchParams.set("token", token);
+      const ws = new WebSocket(url.toString());
       socketRef.current = ws;
 
       ws.onopen = () => {

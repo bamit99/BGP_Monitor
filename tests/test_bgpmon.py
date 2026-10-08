@@ -15,11 +15,15 @@ import sys
 import tempfile
 import unittest
 import ipaddress
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from fastapi.testclient import TestClient
+
+from bgpmon.api import create_app
 from bgpmon.config import DetectionSettings, RPkiSettings, Settings, SourceSettings
 from bgpmon.detect import ASGraph, DetectionEngine, is_bogon_asn, is_bogon_prefix
 from bgpmon.gate import AlertGate
@@ -236,6 +240,55 @@ class TestVisibilityLoss(unittest.TestCase):
         engine = DetectionEngine(self.settings, self.rpki, ASGraph())
         engine.evaluate(make_update("203.0.113.0/24", [64496], "rrc00", self.base))
         self.assertEqual(engine.check_visibility(self.base + timedelta(seconds=1000)), [])
+
+
+class TestTokenAuthContract(unittest.TestCase):
+    """The dashboard must be able to satisfy the guard the server applies.
+
+    Both `Settings` and `ApiSettings` are frozen, so a configured token means
+    building a new instance rather than assigning.
+    """
+
+    def _client(self, token: str):
+        base = Settings.load()
+        settings = replace(base, api=replace(base.api, token=token))
+        return TestClient(create_app(settings))
+
+    def test_api_rejects_a_missing_token(self):
+        self.assertEqual(self._client("secret").get("/api/alerts").status_code, 401)
+
+    def test_api_rejects_a_wrong_token(self):
+        response = self._client("secret").get("/api/alerts", headers={"Authorization": "Bearer wrong"})
+        self.assertEqual(response.status_code, 401)
+
+    def test_api_accepts_a_correct_token(self):
+        response = self._client("secret").get("/api/alerts", headers={"Authorization": "Bearer secret"})
+        self.assertNotEqual(response.status_code, 401)
+
+    def test_no_token_configured_means_no_auth(self):
+        self.assertNotEqual(self._client("").get("/api/alerts").status_code, 401)
+
+    def test_health_stays_open_when_a_token_is_configured(self):
+        """The compose healthcheck and any uptime probe must not need the token."""
+        response = self._client("secret").get("/api/health")
+        self.assertNotEqual(response.status_code, 401)
+
+
+class TestLoopbackBind(unittest.TestCase):
+    """The scope write endpoint changes what an operator sees, so the published
+    port must default to loopback."""
+
+    def test_compose_publishes_on_loopback(self):
+        import re
+
+        compose = (Path(__file__).resolve().parent.parent / "docker-compose.yml").read_text(
+            encoding="utf-8")
+        published = re.findall(r'^\s*-\s*"([\d.]+:)?\$\{BGPMON_API_PORT', compose, re.MULTILINE)
+        self.assertTrue(published, "no BGPMON_API_PORT mapping found")
+        self.assertTrue(
+            all(entry.startswith("127.0.0.1:") for entry in published),
+            f"monitor port must be published on loopback, found: {published}",
+        )
 
 
 class TestIncidentExpiry(unittest.TestCase):
