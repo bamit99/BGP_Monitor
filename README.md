@@ -98,9 +98,13 @@ React 19 + Vite + Tailwind v4, served from the same FastAPI process.
 
 - **Overview** — ingest rate, alert mix, RPKI health, latency, queue depth, priority queue
 - **Alerts** — virtualised table, severity/kind/text filters, sortable, live via WebSocket
-- **Topology** — observed AS adjacency, deterministic layout
 - **Scope** — ASN or operator-name lookup with live RPKI state per prefix
 - **RPKI** — on-demand validation against the local VRP set
+
+A global AS topology map was removed: it drew 400 origins with no pan, zoom or
+drill-down, which was not a usable picture. Ad-hoc graph exploration lives in the
+Neo4j browser at `http://localhost:7474`. A selection-driven neighbourhood view
+is planned — see the roadmap.
 
 ### Operations
 - Prometheus `/metrics`, `/api/health`, structured feed/sink/gate counters
@@ -216,8 +220,9 @@ links, incident correlation, scope matching, and secret handling.
 | 1 | **Scope filter** — declare your ASNs, see only your alerts | On an unscoped install, 1 723 alerts in the recent window contained **two** concerning one operator's ASN. The library is built and tested; the API and console surface are what remain |
 | 2 | **SIEM forwarding** — syslog RFC 5424 over TCP | The sink contract and gating are specced; not yet wired |
 | 3 | **Seasonal `LONG_PATH` baseline** | Currently z-scores a 256-sample in-memory deque that resets on restart and models no seasonality, while path length is strongly diurnal |
-| 4 | **Enterprise deployment** | Reverse proxy for TLS, login screen, authorisation and audit with real identity. The app stays loopback-bound; the proxy terminates TLS |
-| 5 | **ROA change detection**, ASPA, RFC 9234 peer-lock | Engine features, tracked |
+| 4 | **Contextual topology** | Rebuild the removed global AS map as a selection-driven neighbourhood: pick an AS from an alert or an episode, see 1–2 hops with relationship type, prefix count and open-alert count. A global 400-node view has no useful picture; a local one answers "who is this AS and what does it touch" |
+| 5 | **Enterprise deployment** | Reverse proxy for TLS, login screen, authorisation and audit with real identity. The app stays loopback-bound; the proxy terminates TLS |
+| 6 | **ROA change detection**, ASPA, RFC 9234 peer-lock | Engine features, tracked |
 
 ## Security
 

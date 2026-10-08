@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import type { AlertResponse, Health, RPKIResult, ScopeSearchResponse, Topology } from "./types";
+import type { AlertResponse, Health, RPKIResult, ScopeSearchResponse } from "./types";
 
 /**
  * Build-time only: a Vite env var is inlined into the bundle at `vite build`.
@@ -43,14 +43,6 @@ export function useHealth(intervalMs = 2000) {
     queryFn: () => getJSON<Health>("/api/health"),
     refetchInterval: intervalMs,
     staleTime: intervalMs / 2,
-  });
-}
-
-export function useTopology(intervalMs = 15000) {
-  return useQuery({
-    queryKey: ["topology"],
-    queryFn: () => getJSON<Topology>("/api/topology?limit=400"),
-    refetchInterval: intervalMs,
   });
 }
 

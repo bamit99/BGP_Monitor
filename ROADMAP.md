@@ -189,9 +189,29 @@ Fixes are specced in the plan referenced above where noted.
    and is worth porting rather than rewriting. The field mapping and the one
    semantic change it requires are documented in
    [docs/legacy-inventory.md](docs/legacy-inventory.md).
-4. **Topology depth** — currently derived from a recency sample of AS paths; once scope is
-   configured, offer an owned-space-first view with provider/customer edges from CAIDA drawn
-   directionally rather than undirected
+4. **Contextual topology — rebuild the removed global map** (2026-10-08)
+   The global AS map was removed. It drew 400 origins on a radial layout with no
+   pan, zoom, hover or drill-down; selecting an ASN only dimmed unrelated edges
+   without re-laying-out, so the picture got *less* readable the more you
+   interacted with it. Three further defects: the ASN search matched on substring
+   (so `82` matched AS820, AS8220 and AS18205), node radius clamped at 14 so
+   nearly every node pinned to maximum size, and edges were truncated to the first
+   400 rather than the most significant.
+   Ad-hoc exploration moved to the Neo4j browser (`127.0.0.1:7474`), which can
+   already answer those questions. The console should not duplicate it.
+   The view worth building is local, not global: pick an AS from an alert row, an
+   episode, or search, and show its neighbourhood.
+   - `GET /api/topology/neighbourhood?asn=&hops=` — 1 to 2 hops, bounded at
+     roughly 30 nodes
+   - Edges labelled with the relationship actually used: provider, customer,
+     peer, sibling. `ASGraph.relationship()` already returns it
+   - Node badges: prefixes originated, open alerts, RPKI-invalid count
+   - Click a neighbour to walk outward, with a breadcrumb back
+   - Composes with the scope filter and episodes rather than duplicating Neo4j
+   - Until this lands, keep the tab removed. Four good surfaces beat five with
+     one that wastes an engineer's time
+   - Also fix the substring ASN match in `bgpmon/scope.py`, which has the same
+     pattern
 5. **Lint config** — add `eslint.config.js`; `npm run lint` cannot pass as written (open defect 12)
 
 ## Engine

@@ -169,10 +169,27 @@ class TestSpaDeepLinks(unittest.TestCase):
         self.client = TestClient(app)
 
     def test_deep_link_returns_shell(self):
-        for route in ("/alerts", "/topology", "/rpki", "/alerts/1234"):
+        for route in ("/alerts", "/rpki", "/alerts/1234"):
             response = self.client.get(route)
             self.assertEqual(response.status_code, 200, route)
             self.assertIn("shell", response.text)
+
+    def test_removed_topology_route_still_returns_the_shell(self):
+        """The global AS map is gone, but a stale bookmark must not 404.
+
+        The SPA fallback is a catch-all, so /topology resolves to the shell and
+        the client router renders its not-found state.
+        """
+        response = self.client.get("/topology")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("shell", response.text)
+
+    def test_console_nav_no_longer_offers_topology(self):
+        """A removed view must also disappear from the navigation."""
+        source = (Path(__file__).resolve().parent.parent / "web" / "src" / "App.tsx").read_text(
+            encoding="utf-8")
+        self.assertNotIn('to: "/topology"', source)
+        self.assertNotIn("views/Topology", source)
 
     def test_root_returns_shell(self):
         self.assertEqual(self.client.get("/").status_code, 200)

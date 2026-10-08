@@ -1,17 +1,17 @@
 import { NavLink, Route, Routes } from "react-router-dom";
-import { Activity, GitBranch, Radar, ShieldAlert } from "lucide-react";
+import { Activity, Globe, Radar, ShieldAlert } from "lucide-react";
 import { clsx } from "clsx";
 import { useAlertStream } from "@/lib/useAlertStream";
 import { useHealth } from "@/lib/api";
 import Overview from "@/views/Overview";
 import Alerts from "@/views/Alerts";
-import Topology from "@/views/Topology";
 import Rpki from "@/views/Rpki";
+import Scope from "@/views/Scope";
 
 const NAV = [
   { to: "/", label: "Overview", icon: Activity, end: true },
   { to: "/alerts", label: "Alerts", icon: ShieldAlert, end: false },
-  { to: "/topology", label: "Topology", icon: GitBranch, end: false },
+  { to: "/scope", label: "Scope", icon: Globe, end: false },
   { to: "/rpki", label: "RPKI", icon: Radar, end: false },
 ];
 
@@ -78,10 +78,26 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Overview alerts={alerts} health={health} />} />
           <Route path="/alerts" element={<Alerts alerts={alerts} />} />
-          <Route path="/topology" element={<Topology />} />
+          <Route path="/scope" element={<Scope />} />
           <Route path="/rpki" element={<Rpki />} />
+          <Route path="*" element={<NotFound />} />
         </Routes>
       </main>
+    </div>
+  );
+}
+
+function NotFound() {
+  return (
+    <div className="grid h-full place-items-center px-6 text-center">
+      <div className="max-w-md space-y-2">
+        <h2 className="text-sm font-semibold">No such view</h2>
+        <p className="text-[12px] text-muted">
+          The global AS topology map was removed: it drew 400 origins with no pan, zoom or
+          drill-down, which was not a usable picture. For ad-hoc graph exploration, the Neo4j
+          browser is at <span className="font-mono">http://localhost:7474</span>.
+        </p>
+      </div>
     </div>
   );
 }
