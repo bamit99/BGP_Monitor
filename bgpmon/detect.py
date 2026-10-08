@@ -231,6 +231,7 @@ class PrefixState:
     path_lengths: Deque[int] = field(default_factory=lambda: deque(maxlen=256))
     collectors: Set[str] = field(default_factory=set)
     announced_since_loss: Optional[datetime] = None
+    loss_reported: Optional[datetime] = None
 
     def observe(self, update: Update) -> None:
         if update.origin_as is not None:
@@ -557,10 +558,9 @@ class DetectionEngine:
                 continue
             if len(st.collectors) < self.settings.visibility_min_expected_collectors:
                 continue
-            if st.announced_since_loss is not None and st.announced_since_loss == st.last_seen:
-                # already reported for this gap
-                if getattr(st, "_loss_reported", None) == st.last_seen:
-                    continue
+            # One alert per gap; a fresh sighting re-arms the detector.
+            if st.loss_reported == st.last_seen:
+                continue
             placeholder = Update(
                 update_id=f"visibility_{prefix}_{int(st.last_seen.timestamp())}",
                 timestamp=now, prefix=prefix, collector="|".join(sorted(st.collectors)),
@@ -573,7 +573,7 @@ class DetectionEngine:
                 is_owned=True, last_seen=st.last_seen.isoformat(),
                 collectors=sorted(st.collectors),
             )
-            st._loss_reported = st.last_seen  # type: ignore[attr-defined]
+            st.loss_reported = st.last_seen
             out.append(alert)
         return out
 

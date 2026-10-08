@@ -14,7 +14,8 @@ import struct
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timezone
+import ipaddress
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -181,6 +182,60 @@ class TestSpaDeepLinks(unittest.TestCase):
         response = self.client.get("/assets/app.js")
         self.assertEqual(response.status_code, 200)
         self.assertIn("console.log", response.text)
+
+
+class TestVisibilityLoss(unittest.TestCase):
+    """A documented CRITICAL detector that raises AttributeError is not a detector.
+
+    `PrefixState` is a slots dataclass; assigning an undeclared attribute raises.
+    `pipeline._visibility_loop` swallowed the error into a log line, so the
+    detector in README.md and Logic.md looked alive and never ran.
+    """
+
+    def setUp(self):
+        self.rpki = RPkiEngine(RPkiSettings(enable_remote_fallback=False))
+        self.rpki.vrps.replace([], [], serial=1, session_id=1)
+        self.settings = DetectionSettings(
+            owned_prefixes=(ipaddress.ip_network("203.0.113.0/24"),),
+            visibility_loss_grace_s=900,
+            visibility_min_expected_collectors=2,
+        )
+        self.engine = DetectionEngine(self.settings, self.rpki, ASGraph())
+        self.base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        for collector in ("rrc00", "rrc01"):
+            self.engine.evaluate(make_update("203.0.113.0/24", [64496], collector, self.base))
+
+    def test_no_alert_inside_grace(self):
+        self.assertEqual(self.engine.check_visibility(self.base + timedelta(seconds=600)), [])
+
+    def test_alert_after_grace_across_two_collectors(self):
+        alerts = self.engine.check_visibility(self.base + timedelta(seconds=1000))
+        self.assertEqual(len(alerts), 1)
+        self.assertEqual(alerts[0].kind, Kind.VISIBILITY_LOSS)
+        self.assertEqual(alerts[0].severity, Severity.CRITICAL)
+        self.assertEqual(alerts[0].prefix, "203.0.113.0/24")
+
+    def test_one_alert_per_gap(self):
+        past = self.base + timedelta(seconds=1000)
+        self.assertEqual(len(self.engine.check_visibility(past)), 1)
+        self.assertEqual(self.engine.check_visibility(past + timedelta(seconds=10)), [],
+                         "the same gap must not re-alert")
+
+    def test_fresh_sighting_rearms_the_detector(self):
+        past = self.base + timedelta(seconds=1000)
+        self.engine.check_visibility(past)
+        seen_again = past + timedelta(seconds=100)
+        for collector in ("rrc00", "rrc01"):
+            self.engine.evaluate(
+                make_update("203.0.113.0/24", [64496], collector, seen_again))
+        self.assertEqual(len(self.engine.check_visibility(seen_again + timedelta(seconds=1000))), 1,
+                         "a new gap is a new incident")
+
+    def test_single_collector_is_not_an_outage(self):
+        """One collector's session blip is not a customer-visible outage."""
+        engine = DetectionEngine(self.settings, self.rpki, ASGraph())
+        engine.evaluate(make_update("203.0.113.0/24", [64496], "rrc00", self.base))
+        self.assertEqual(engine.check_visibility(self.base + timedelta(seconds=1000)), [])
 
 
 class TestIncidentExpiry(unittest.TestCase):
