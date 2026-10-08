@@ -1,0 +1,8 @@
+# Optional extras for the BGP Monitor service (API, monitoring, dashboard).
+# Installed alongside requirements.txt, which carries the hard runtime floors.
+# These are feature-complete but non-essential; the ingest path runs without them.
+
+fastapi[standard]>=0.115,<1     # includes httpx, required by bgpmon/scope.py
+uvicorn[standard]>=0.30,<1
+neo4j>=5.28,<7
+prometheus-client>=0.20,<1

@@ -8,6 +8,7 @@ neo4j>=5.28,<7
 fastapi>=0.115,<1
 uvicorn[standard]>=0.30,<1
 prometheus-client>=0.20,<1
+httpx>=0.27,<1             # required by bgpmon/scope.py at module scope
 
 # --- security floors ---------------------------------------------------
 # Carried over from the OSV.dev dependency audit that ran against the
