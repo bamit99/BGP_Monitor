@@ -20,6 +20,7 @@ cache/
 
 # Web
 web/node_modules/
+web/tsconfig.tsbuildinfo
 web/dist/
 
 # Editors

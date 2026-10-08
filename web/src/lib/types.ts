@@ -110,3 +110,22 @@ export interface RPKIResult {
   matched: { asn: number; max_length: number }[];
   offending: { asn: number; max_length: number; why: string }[];
 }
+
+export interface ScopedPrefix {
+  prefix: string;
+  origin_as: number | null;
+  rpki_state: string | null;
+}
+
+export interface ScopedASN {
+  asn: number;
+  name: string;
+  country: string | null;
+  prefixes: ScopedPrefix[];
+}
+
+export interface ScopeSearchResponse {
+  query: string;
+  count: number;
+  asns: ScopedASN[];
+}
