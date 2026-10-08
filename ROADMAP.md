@@ -136,8 +136,12 @@ Fixes are specced in the plan referenced above where noted.
 1. **Bundle split** — 767 kB single chunk (224 kB gzip); `manualChunks` for recharts and react-router
 2. **Live polish** — severity filter chips already persist in the store; add per-user persistence
    (localStorage) and a "paused" state so triage can freeze the stream while reading
-3. **Episode view** — episodes exist in the engine's model but have no tab yet; a timeline per
-   incident (alerts grouped by AS pair/origin) is the NOC-grade triage surface
+3. **Episode view** — an incident timeline (alerts grouped by AS pair/origin) is the
+   NOC-grade triage surface, and it does not exist yet: there is no episode concept
+   anywhere in the rebuild. An implementation does exist in the archived pre-rebuild
+   tree — `utils/episode_manager.py`, 616 lines, with `Episode` / `EpisodeManager`,
+   event scoring, and hijack scope/subtype classification. It was not carried forward
+   and is worth porting rather than rewriting.
 4. **Topology depth** — currently derived from a recency sample of AS paths; once scope is
    configured, offer an owned-space-first view with provider/customer edges from CAIDA drawn
    directionally rather than undirected
