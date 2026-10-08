@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 
 from bgpmon.config import Settings
 from bgpmon.pipeline import Pipeline
+from bgpmon.scope import ScopeLookup
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +57,7 @@ def mount_dashboard(app: FastAPI, dist: Path) -> bool:
 def create_app(settings: Optional[Settings] = None) -> FastAPI:
     settings = settings or Settings.load()
     pipeline = Pipeline(settings)
+    scope_lookup = ScopeLookup()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -64,6 +66,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         try:
             yield
         finally:
+            await scope_lookup.close()
             pipeline.stop()
 
     app = FastAPI(
@@ -112,6 +115,18 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                        _: None = Depends(require_token)) -> Dict[str, Any]:
         return {"prefix": prefix, "history": pipeline.sink.prefix_history(prefix, limit)}
 
+    @app.get("/api/episodes")
+    def episodes(limit: int = Query(200, ge=1, le=2000),
+                 _: None = Depends(require_token)) -> Dict[str, Any]:
+        """Open incidents: related alerts for a prefix, one per origin.
+
+        Session-scoped. A restart mid-incident starts a new episode.
+        """
+        active = pipeline.episodes.active()
+        active.sort(key=lambda e: (e.score, e.end_time), reverse=True)
+        rows = [episode.to_dict() for episode in active[:limit]]
+        return {"count": len(rows), "episodes": rows, "stats": pipeline.episodes.stats()}
+
     @app.get("/api/topology")
     def topology(limit: int = Query(300, ge=10, le=2000),
                  _: None = Depends(require_token)) -> Dict[str, Any]:
@@ -145,6 +160,29 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 "leak_confidence_floor": settings.detection.leak_confidence_floor,
                 "visibility_loss_grace_s": settings.detection.visibility_loss_grace_s,
             },
+        }
+
+    @app.get("/api/scope/search")
+    async def scope_search(
+        q: str = Query(..., description="ASN (AS1234) or telecom/operator name", min_length=1),
+        _: None = Depends(require_token),
+    ) -> Dict[str, Any]:
+        results = await scope_lookup.search(q, pipeline.rpki)
+        return {
+            "query": q,
+            "count": len(results),
+            "asns": [
+                {
+                    "asn": r.asn,
+                    "name": r.name,
+                    "country": r.country,
+                    "prefixes": [
+                        {"prefix": p.prefix, "origin_as": p.origin_as, "rpki_state": p.rpki_state}
+                        for p in r.prefixes
+                    ],
+                }
+                for r in results
+            ],
         }
 
     @app.get("/metrics", response_class=PlainTextResponse)

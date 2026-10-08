@@ -314,5 +314,105 @@ class TestHijackSubtype(unittest.TestCase):
         self.assertNotEqual(episode.metadata["hijack_subtype"], "ORIGIN_CHANGE")
 
 
+class TestPipelineWiring(unittest.TestCase):
+    """The port is only worth having if something calls it."""
+
+    def _pipeline(self):
+        from bgpmon.config import Settings
+        from bgpmon.pipeline import Pipeline
+
+        return Pipeline(Settings.load())
+
+    def test_pipeline_owns_an_episode_manager(self):
+        pipeline = self._pipeline()
+        self.assertEqual(pipeline.episodes.stats()["active"], 0)
+
+    def test_admitted_alerts_are_filed_into_an_episode(self):
+        pipeline = self._pipeline()
+
+        class StubEngine:
+            def evaluate(self, update):
+                return [Alert(
+                    alert_id="a1", dedup_key="k", timestamp=update.timestamp,
+                    kind=Kind.ROUTE_LEAK, severity=Severity.HIGH, confidence=0.9,
+                    prefix="203.0.113.0/24", as_path="64496,64500", peer_as="64500",
+                    collector="rrc00", update_id=update.update_id, origin_as=64496,
+                    reasons=["Valley-free violation (RFC 7908)"],
+                )]
+
+            def snapshot(self):
+                return {}
+
+            def is_critical(self, prefix):
+                return True
+
+        pipeline.engine = StubEngine()
+        pipeline._process(_update(prefix="203.0.113.0/24"))
+
+        stats = pipeline.episodes.stats()
+        self.assertEqual(stats["created"], 1)
+        self.assertEqual(stats["active"], 1)
+        episode = pipeline.episodes.active()[0]
+        self.assertTrue(episode.metadata["is_critical_prefix"])
+
+    def test_episode_failure_cannot_stop_an_alert_reaching_the_sink(self):
+        """Episode correlation is a triage affordance, not part of the hot path."""
+        pipeline = self._pipeline()
+        delivered = []
+        pipeline.sink.submit_alert = delivered.append
+
+        class BrokenEngine:
+            def evaluate(self, update):
+                return [Alert(
+                    alert_id="a1", dedup_key="k", timestamp=update.timestamp,
+                    kind=Kind.ROUTE_LEAK, severity=Severity.HIGH, confidence=0.9,
+                    prefix="203.0.113.0/24", as_path="64496,64500", peer_as="64500",
+                    collector="rrc00", update_id=update.update_id, origin_as=64496,
+                    reasons=["x"],
+                )]
+
+            def snapshot(self):
+                return {}
+
+            def is_critical(self, prefix):
+                raise RuntimeError("boom")
+
+        pipeline.engine = BrokenEngine()
+        pipeline._process(_update(prefix="203.0.113.0/24"))
+
+        self.assertEqual(len(delivered), 1, "the sink must still receive the alert")
+        self.assertEqual(len(pipeline.recent_alerts), 1)
+
+    def test_episodes_appear_in_health(self):
+        health = self._pipeline().health()
+        self.assertIn("episodes", health)
+        self.assertIn("active", health["episodes"])
+
+    def test_sweep_runs_without_raising(self):
+        pipeline = self._pipeline()
+        self.assertEqual(pipeline.sweep_episodes(), 0)
+
+    def test_api_exposes_open_episodes(self):
+        from fastapi.testclient import TestClient
+
+        from bgpmon.api import create_app
+        from bgpmon.config import Settings
+
+        client = TestClient(create_app(Settings.load()))
+        body = client.get("/api/episodes").json()
+        self.assertEqual(body["count"], 0)
+        self.assertEqual(body["episodes"], [])
+
+
+def _update(prefix="203.0.113.0/24", collector="rrc00"):
+    from bgpmon.models import Update, make_update_id
+
+    return Update(
+        update_id=make_update_id(collector, BASE, prefix), timestamp=BASE, prefix=prefix,
+        collector=collector, peer="192.0.2.1", peer_as="64500",
+        as_path="64496,64500", as_path_list=[64496, 64500], origin_as=64496,
+    )
+
+
 if __name__ == "__main__":
     unittest.main()

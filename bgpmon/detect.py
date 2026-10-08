@@ -290,6 +290,17 @@ class DetectionEngine:
                 return crit, net, net.prefixlen - crit.prefixlen
         return None, None, 0
 
+    def is_critical(self, prefix: Optional[str]) -> bool:
+        """Is this prefix inside configured critical space?
+
+        Exposed for the pipeline: episode scoring weights critical prefixes, and
+        reaching into `_critical` from another module would be worse than one
+        small named method.
+        """
+        cover, _, _ = self._owned_match(prefix or "")
+        return cover is not None and cover in self._critical
+
+    # ---- state_for ----------------------------------------------------
     def _state_for(self, prefix: str) -> PrefixState:
         st = self._state.get(prefix)
         if st is None:

@@ -23,6 +23,7 @@ from typing import Dict, List, Optional
 from bgpmon.collector import Collector
 from bgpmon.config import Settings
 from bgpmon.detect import ASGraph, DetectionEngine
+from bgpmon.episodes import EpisodeManager
 from bgpmon.gate import AlertGate
 from bgpmon.models import Alert, Severity, Update
 from bgpmon.rpki import RPkiEngine
@@ -43,6 +44,10 @@ class Pipeline:
         self.engine = DetectionEngine(settings.detection, self.rpki, self.as_graph)
         self.gate = AlertGate(confirm_updates=settings.detection.moas_confirm_updates)
         self.sink = GraphSink(settings.sink, metrics=self.metrics)
+        # Episode correlation. Session-scoped like the rest of the in-memory
+        # detector state: a restart mid-incident starts a new episode.
+        # See docs/legacy-inventory.md.
+        self.episodes = EpisodeManager()
 
         self._work: "queue.Queue[Update]" = queue.Queue(maxsize=settings.source.queue_max)
         self._worker: Optional[threading.Thread] = None
@@ -158,6 +163,12 @@ class Pipeline:
             self.metrics.record_alert(alert.kind.value, alert.severity.value)
             if alert.severity in (Severity.HIGH, Severity.CRITICAL):
                 self.sink.submit_alert(alert)
+            try:
+                self.episodes.process(alert, is_critical_prefix=self.engine.is_critical(alert.prefix))
+            except Exception as exc:  # noqa: BLE001
+                # Episode correlation is a triage affordance. It must never be
+                # able to stop an alert reaching the sink or the live stream.
+                logger.error("Episode correlation failed: %s", exc)
             self._record_recent(alert)
             self._publish(alert)
 
@@ -210,9 +221,15 @@ class Pipeline:
         return out
 
     # ---- visibility ---------------------------------------------------
+    def sweep_episodes(self) -> int:
+        """Close stale episodes. Separate from the visibility loop so it is
+        callable and testable on its own."""
+        return self.episodes.sweep()
+
     def _visibility_loop(self) -> None:
         while not self._stop.wait(60):
             try:
+                self.episodes.sweep()
                 alerts = self.engine.check_visibility()
             except Exception as exc:  # noqa: BLE001
                 logger.error("Visibility check failed: %s", exc)
@@ -236,6 +253,7 @@ class Pipeline:
             "detection": self.engine.snapshot(),
             "gate": self.gate.stats(),
             "sink": self.sink.stats(),
+            "episodes": self.episodes.stats(),
             "metrics": self.metrics.snapshot(),
             "subscribers": len(self._subscribers),
         }
