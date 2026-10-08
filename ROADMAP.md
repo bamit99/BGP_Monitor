@@ -141,7 +141,9 @@ Fixes are specced in the plan referenced above where noted.
    anywhere in the rebuild. An implementation does exist in the archived pre-rebuild
    tree — `utils/episode_manager.py`, 616 lines, with `Episode` / `EpisodeManager`,
    event scoring, and hijack scope/subtype classification. It was not carried forward
-   and is worth porting rather than rewriting.
+   and is worth porting rather than rewriting. The field mapping and the one
+   semantic change it requires are documented in
+   [docs/legacy-inventory.md](docs/legacy-inventory.md).
 4. **Topology depth** — currently derived from a recency sample of AS paths; once scope is
    configured, offer an owned-space-first view with provider/customer edges from CAIDA drawn
    directionally rather than undirected
@@ -178,10 +180,37 @@ shipped above or obsolete.
    refreshed on a schedule with source attribution on each alert. Note
    `known_bad_actors` in `config/security_config.json` is currently dead config:
    nothing reads it.
-3. **Anomaly detection beyond z-scores** — the old Isolation Forest never fitted a
-   model and was removed rather than shipped inert; if revisited, use per-prefix
-   historical baselines (needs the persistence item above) and validate
-   out-of-sample before enabling anything that pages a NOC
+3. **Anomaly detection beyond z-scores** — split into a quick win and a long-term
+   track. Neither puts a model in the detection path; see
+   [docs/legacy-inventory.md](docs/legacy-inventory.md) for why the previous
+   attempt is being removed rather than revived.
+
+   **Quick win — persisted seasonal baseline.** `LONG_PATH` today z-scores over a
+   256-sample in-memory deque (`detect.py:PrefixState.path_lengths`) that resets on
+   restart and models no seasonality, while BGP path length is strongly diurnal. A
+   real 30-day-old prefix sitting 4σ above its own history at 03:00 is invisible.
+   Replace the deque with a persisted per-prefix baseline: median and MAD per
+   *hour-of-day* bucket, decaying over ~30 days.
+   - Explainable: "4σ above this prefix's own 30-day profile for this hour" — a
+     sentence a NOC can put in a ticket
+   - No training pipeline, no drift story, no model version
+   - Degrades to silence with no history, exactly like every other baselined detector
+   - Store in Neo4j as per-prefix aggregates; no new datastore
+   - Prerequisite the old tracker already flagged: persistence
+
+   **Long term — offline-validated triage ranking, never detection.** Rank which
+   of today's alerts a human should open first. Wrong there costs nothing; wrong
+   in the detector costs trust in the deterministic detectors, which are the ones
+   that can explain themselves with a specification number (RPKI is cryptographic,
+   leaks are RFC 7908, bogons are RFC 6890).
+   - Train offline against a week of recorded alerts, measure ranking quality
+     against human triage order, and ship disabled until it beats a
+     severity-then-recency sort
+   - Keep it out of `bgpmon/detect.py` entirely — it consumes the alert stream, it
+     does not produce alerts
+   - If it cannot be validated out-of-sample, do not ship it. The previous
+     Isolation Forest was removed precisely because it was never fitted and would
+     have been shipped inert
 4. **Documentation and runbooks** — NOC-facing material: what each alert kind means,
    first-response actions, escalation, and false-positive history for tuning
 
