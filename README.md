@@ -177,6 +177,13 @@ native run. `.env` is git-ignored.
 Every variable, with defaults and what each one degrades:
 [INSTALL.md](INSTALL.md#configuration-reference).
 
+Prefix scope fine-tuning lives in `config/security_config.json`: `owned_prefixes`,
+`critical_prefixes`, `monitored_asns` and `expected_origins`. That file carries
+your site's monitored space, so it is not in git — copy
+[`config/security_config.example.json`](config/security_config.example.json)
+into `config/` as `security_config.json` (kept out of the image as well) and
+edit it to your network.
+
 Two defaults worth knowing:
 
 - **Owned prefixes are empty**, so hijack and visibility classification are
@@ -207,7 +214,7 @@ is configured. Interactive docs are at `/docs`.
 ## Development
 
 ```bash
-python -m pytest tests/ -v         # 143 tests
+python -m pytest tests/ -v         # 159 tests (158 pass, 1 skip)
 cd web && npm ci && npm run build # console
 python -m bgpmon --soak 120        # headless throughput report
 ```

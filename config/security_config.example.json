@@ -1,0 +1,6 @@
+{
+  "owned_prefixes": ["192.0.2.0/24"],
+  "critical_prefixes": ["198.51.100.0/24", "203.0.113.0/24"],
+  "monitored_asns": [65001, 65002],
+  "expected_origins": {"192.0.2.0/24": [65001]}
+}

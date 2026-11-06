@@ -11,6 +11,9 @@ venv/
 !.env.example
 config/db_config.json
 config/database_config.ini
+# Operator-specific monitored prefixes and ASNs (see the committed
+# config/security_config.example.json for the expected schema)
+config/security_config.json
 
 # Logs and runtime data
 logs/
